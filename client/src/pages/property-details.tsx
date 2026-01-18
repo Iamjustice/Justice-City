@@ -28,7 +28,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 export default function PropertyDetails() {
   const [match, params] = useRoute("/property/:id");
   const [, setLocation] = useLocation();
-  const { user, login } = useAuth();
+  const { user } = useAuth();
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -63,7 +63,7 @@ export default function PropertyDetails() {
 
   const handleAction = (action: string) => {
     if (!user) {
-      login();
+      setLocation("/auth?mode=login");
       return;
     }
 

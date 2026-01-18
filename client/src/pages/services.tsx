@@ -8,6 +8,7 @@ import { VerificationModal } from "@/components/verification-modal";
 import { ChatInterface } from "@/components/chat-interface";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 
 const ICON_MAP: Record<string, any> = {
   ClipboardCheck,
@@ -17,15 +18,16 @@ const ICON_MAP: Record<string, any> = {
 };
 
 export default function Services() {
-  const { user, login } = useAuth();
+  const { user } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<ProService | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
 
   const handleBook = (service: ProService) => {
     if (!user) {
-      login();
+      setLocation("/auth?mode=login");
       return;
     }
     if (!user.isVerified) {

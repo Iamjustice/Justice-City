@@ -4,14 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
   const [isSignUp, setIsSignUp] = useState(true);
-  const { login } = useAuth();
+  const { login, signUp, user, isLoading: authLoading } = useAuth();
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     // Check if we should start in login mode
@@ -21,6 +22,16 @@ export default function AuthPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (user) {
+      if (isSignUp) {
+        setLocation("/verify");
+      } else {
+        setLocation("/dashboard");
+      }
+    }
+  }, [user, isSignUp, setLocation]);
+
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -28,19 +39,35 @@ export default function AuthPage() {
     role: "buyer" as "buyer" | "seller" | "agent" | "admin"
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Submit clicked, role:", formData.role);
+    setIsSubmitting(true);
     
-    // Call the login function from AuthContext to update global state
-    login(formData.role);
-
-    if (isSignUp) {
-      setLocation("/verify");
-    } else {
-      setLocation("/dashboard");
+    try {
+      if (isSignUp) {
+        await signUp(formData.email, formData.password, {
+          name: formData.name,
+          email: formData.email,
+          role: formData.role,
+          isVerified: false
+        });
+      } else {
+        await login(formData.email, formData.password);
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  if (authLoading && !isSubmitting) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-[90vh] flex items-center justify-center p-4 bg-slate-50/50 py-12">
@@ -135,7 +162,8 @@ export default function AuthPage() {
             </div>
           </CardContent>
           <CardFooter className="flex flex-col gap-4">
-            <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 h-11 text-base font-semibold">
+            <Button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 hover:bg-blue-700 h-11 text-base font-semibold">
+              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
               {isSignUp ? "Sign Up" : "Log In"}
             </Button>
             <div className="text-sm text-center text-slate-500">
