@@ -7,10 +7,9 @@ import { VerificationModal } from "@/components/verification-modal";
 import { ChatInterface } from "@/components/chat-interface";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useLocation } from "wouter";
-import { useServices } from "@/hooks/use-data";
+import { useServices, useCreateServiceRequest } from "@/hooks/use-data";
 import { Service } from "@shared/schema";
 
-// Mapping service icon names to their respective Lucide icons
 const ICON_MAP: Record<string, any> = {
   ClipboardCheck,
   Compass,
@@ -21,25 +20,19 @@ const ICON_MAP: Record<string, any> = {
 /**
  * Services Component:
  * Displays a catalog of professional real estate services available to users.
- * Services include property valuation, land surveying, and more.
  */
 export default function Services() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
 
-  // Modal and dialog state
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
+  const [isSuccessDialogOpen, setIsSuccessDialogOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
-  const [isChatOpen, setIsChatOpen] = useState(false);
 
-  // Fetch live services from Supabase
   const { data: services, isLoading } = useServices();
+  const createRequest = useCreateServiceRequest();
 
-  /**
-   * Initiates a booking/inquiry flow for a service.
-   * Redirects to auth if not logged in, or shows verification modal if not verified.
-   */
-  const handleBook = (service: Service) => {
+  const handleBook = async (service: Service) => {
     if (!user) {
       setLocation("/auth?mode=login");
       return;
@@ -48,44 +41,42 @@ export default function Services() {
       setIsVerificationModalOpen(true);
       return;
     }
-    setSelectedService(service);
-    setIsChatOpen(true);
+
+    try {
+      await createRequest.mutateAsync({
+        userId: user.id,
+        serviceId: service.id,
+        details: `Request for ${service.name}`,
+        status: "Pending",
+      });
+      setSelectedService(service);
+      setIsSuccessDialogOpen(true);
+    } catch (error) {
+      console.error("Failed to book service", error);
+    }
   };
 
   return (
     <div className="container mx-auto px-4 py-12">
-      {/* Informative modal for unverified users */}
       <VerificationModal 
         isOpen={isVerificationModalOpen} 
         onClose={() => setIsVerificationModalOpen(false)}
         triggerAction="book professional services"
       />
 
-      {/* Chat interface for service inquiries */}
-      <Dialog open={isChatOpen} onOpenChange={setIsChatOpen}>
-        <DialogContent className="sm:max-w-md p-0 border-none bg-transparent shadow-none">
-          {selectedService && (
-            <ChatInterface 
-              recipient={{
-                name: "Justice City Support",
-                image: "https://api.dicebear.com/7.x/bottts/svg?seed=Support",
-                verified: true
-              }}
-              propertyTitle={selectedService.name}
-              initialMessage={
-                // Dynamic initial messages based on the selected service type
-                selectedService.name === "Land Surveying" 
-                  ? "Hello! I saw you are interested in our professional services. Do you mind giving detail description of the type of survey service you want?"
-                  : selectedService.name === "Property Valuation"
-                  ? "Hello! I saw you are interested in our professional services. Could you provide the address and type of property you'd like us to value?"
-                  : selectedService.name === "Land Info Verification"
-                  ? "Hello! I saw you are interested in our professional services. Please provide the details of the land or title number you'd like us to verify."
-                  : selectedService.name === "Snagging Services"
-                  ? "Hello! I saw you are interested in our professional services. When is your move-in date and what's the location of the new building?"
-                  : `Hello! I saw you were interested in our ${selectedService.name}. How can we help you today?`
-              }
-            />
-          )}
+      {/* Success Dialog */}
+      <Dialog open={isSuccessDialogOpen} onOpenChange={setIsSuccessDialogOpen}>
+        <DialogContent className="sm:max-w-md text-center p-8">
+          <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <ShieldCheck className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Service Requested!</h2>
+          <p className="text-slate-500 mb-6">
+            Your request for {selectedService?.name} has been received. Our team will contact you shortly to finalize details.
+          </p>
+          <Button onClick={() => setLocation("/dashboard")} className="w-full bg-blue-600">
+            View in Dashboard
+          </Button>
         </DialogContent>
       </Dialog>
 
@@ -96,7 +87,6 @@ export default function Services() {
         </p>
       </div>
 
-      {/* Services Grid */}
       {isLoading ? (
         <div className="flex justify-center py-20">
           <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
@@ -135,9 +125,10 @@ export default function Services() {
                   <Button
                     onClick={() => handleBook(service)}
                     className="bg-blue-600 hover:bg-blue-700 group/btn"
+                    disabled={createRequest.isPending}
                   >
-                    Book Now
-                    <ArrowRight className="w-4 h-4 ml-2 group-hover/btn:translate-x-1 transition-transform" />
+                    {createRequest.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : "Book Now"}
+                    {!createRequest.isPending && <ArrowRight className="w-4 h-4 ml-2 group-hover/btn:translate-x-1 transition-transform" />}
                   </Button>
                 </CardFooter>
               </Card>

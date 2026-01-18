@@ -15,6 +15,7 @@ import VerificationPage from "@/pages/verify";
 import ProfilePage from "@/pages/profile";
 import RequestCallbackPage from "@/pages/request-callback";
 import ScheduleTourPage from "@/pages/schedule-tour";
+import ChatPage from "@/pages/chat";
 
 function Router() {
   return (
@@ -27,6 +28,7 @@ function Router() {
         <Route path="/dashboard" component={Dashboard} />
         <Route path="/services" component={Services} />
         <Route path="/profile" component={ProfilePage} />
+        <Route path="/messages" component={ChatPage} />
         <Route path="/request-callback" component={RequestCallbackPage} />
         <Route path="/schedule-tour" component={ScheduleTourPage} />
         <Route component={NotFound} />

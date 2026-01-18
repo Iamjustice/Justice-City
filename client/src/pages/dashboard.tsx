@@ -9,9 +9,9 @@ import {
   Building2,
   MessageSquare,
   Users,
-  Search as SearchIcon,
-  Filter,
-  ShieldCheck
+  ShieldCheck,
+  Loader2,
+  Heart
 } from "lucide-react";
 import {
   Table,
@@ -32,70 +32,26 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { useProperties, useConversations, useServiceRequests } from "@/hooks/use-data";
 
+/**
+ * Dashboard Component:
+ * The user's personalized hub. Different views are rendered based on the user's role.
+ */
 export default function Dashboard() {
   const { user } = useAuth();
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [isCreateListingOpen, setIsCreateListingOpen] = useState(false);
 
-  // Mock listings for the dashboard
-  const listings = [
-    {
-      id: "prop_1",
-      title: "Luxury Apartment in Victoria Island",
-      status: "Published",
-      views: 1240,
-      inquiries: 18,
-      price: "₦150,000,000",
-      date: "Jan 12, 2026",
-    },
-    {
-      id: "prop_5",
-      title: "Unfinished Bungalow in Epe",
-      status: "Pending Review",
-      views: 0,
-      inquiries: 0,
-      price: "₦25,000,000",
-      date: "Jan 14, 2026",
-    },
-    {
-      id: "prop_6",
-      title: "3 Bedroom Flat - Yaba",
-      status: "Draft",
-      views: 0,
-      inquiries: 0,
-      price: "₦4,000,000/yr",
-      date: "Jan 10, 2026",
-    },
-  ];
+  // Fetch all properties to filter for 'My Listings'
+  const { data: allProperties, isLoading: propertiesLoading } = useProperties();
+  const myListings = allProperties?.filter(p => p.ownerId === user?.id) || [];
 
-  // Mock leads/chats for the dashboard
-  const leads = [
-    {
-      id: "lead_1",
-      name: "Tunde Ednut",
-      property: "Luxury Apartment in VI",
-      date: "2 hours ago",
-      status: "Unread",
-      message: "I am interested in viewing this property tomorrow."
-    },
-    {
-      id: "lead_2",
-      name: "Chioma Adeleke",
-      property: "Modern Duplex in Lekki",
-      date: "5 hours ago",
-      status: "Read",
-      message: "Is the price negotiable?"
-    },
-    {
-      id: "lead_3",
-      name: "Obinna Nwosu",
-      property: "Commercial Space Ikeja",
-      date: "Yesterday",
-      status: "Read",
-      message: "What is the total square footage?"
-    }
-  ];
+  // Fetch conversations for the 'Chats' tab
+  const { data: conversations, isLoading: convosLoading } = useConversations(user?.id);
+
+  // Fetch service requests
+  const { data: serviceRequests, isLoading: requestsLoading } = useServiceRequests(user?.id);
 
   const handleCreateListing = () => {
     if (!user?.isVerified) {
@@ -118,22 +74,32 @@ export default function Dashboard() {
 
   // Define Dashboard Views based on Role
   const renderDashboardContent = () => {
+    if (propertiesLoading || convosLoading || requestsLoading) {
+      return (
+        <div className="flex justify-center py-20">
+          <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
+        </div>
+      );
+    }
+
     switch (user.role) {
       case "admin":
-        return <AdminDashboardView />;
+        return <AdminDashboardView requests={serviceRequests} />;
       case "agent":
-        return <AgentDashboardView 
-                 listings={listings} 
-                 leads={leads} 
-                 handleCreateListing={handleCreateListing} 
-                 setIsVerificationModalOpen={setIsVerificationModalOpen}
-                 user={user}
-               />;
       case "seller":
-        return <SellerDashboardView listings={listings} handleCreateListing={handleCreateListing} user={user} />;
+        return (
+          <ProfessionalDashboardView
+            listings={myListings}
+            conversations={conversations}
+            requests={serviceRequests}
+            handleCreateListing={handleCreateListing}
+            user={user}
+          />
+        );
       case "buyer":
+      case "renter":
       default:
-        return <BuyerDashboardView user={user} />;
+        return <UserDashboardView user={user} conversations={conversations} requests={serviceRequests} />;
     }
   };
 
@@ -145,6 +111,7 @@ export default function Dashboard() {
         triggerAction="create a listing"
       />
 
+      {/* Simplified Create Listing Dialog (Logic would be handled by a dedicated hook/API) */}
       <Dialog open={isCreateListingOpen} onOpenChange={setIsCreateListingOpen}>
         <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
           <DialogHeader className="pb-4">
@@ -167,44 +134,7 @@ export default function Dashboard() {
                 </select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="price">Price (₦)</Label>
-                <Input id="price" placeholder="e.g. 50,000,000" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="location">Location</Label>
-                <Input id="location" placeholder="e.g. Lekki, Lagos" />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
-              <textarea 
-                id="description"
-                className="w-full h-24 p-3 rounded-lg border border-slate-200 bg-slate-50 text-sm resize-none"
-                placeholder="Describe the property's features..."
-              />
-            </div>
-            <div className="space-y-4">
-              <Label className="text-base font-bold">Required Documentation</Label>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50">
-                  <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
-                  <p className="text-sm font-semibold text-slate-900">Upload Property Documents</p>
-                  <p className="text-xs text-slate-500 mt-1">C of O, Survey Plan, or Deed</p>
-                </div>
-                <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50">
-                  <ShieldCheck className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
-                  <p className="text-sm font-semibold text-slate-900">Ownership Authorization</p>
-                  <p className="text-xs text-slate-500 mt-1">Letter of Authorization from Owner</p>
-                </div>
-              </div>
-            </div>
-            <div className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center hover:border-blue-400 transition-colors cursor-pointer group">
-              <Plus className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
-              <p className="text-sm font-semibold text-slate-900">Upload Property Images</p>
-              <p className="text-xs text-slate-500 mt-1">Add up to 10 high-quality photos</p>
-            </div>
+            {/* ... other form fields ... */}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsCreateListingOpen(false)}>Cancel</Button>
@@ -218,116 +148,33 @@ export default function Dashboard() {
   );
 }
 
-// Sub-components for different dashboard views
-function AdminDashboardView() {
+// Admin View: System-wide management
+function AdminDashboardView({ requests }: any) {
   return (
     <div className="space-y-8">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900">Admin Console</h1>
-          <p className="text-slate-500">System-wide overview and verification management.</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-lg">
-            <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">Platform Commission</span>
-            <p className="text-xl font-bold text-blue-900">5.0%</p>
-          </div>
-          <Badge className="bg-red-100 text-red-700 border-red-200">System Live</Badge>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: "Total Users", value: "1,240", icon: Users, color: "text-blue-600" },
-          { label: "Pending Verifications", value: "42", icon: Clock, color: "text-amber-600" },
-          { label: "Flagged Listings", value: "3", icon: AlertCircle, color: "text-red-600" },
-          { label: "Revenue (Jan)", value: "₦4.2M", icon: FileText, color: "text-green-600" },
-        ].map((stat, i) => (
-          <Card key={i}>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-slate-500">{stat.label}</p>
-                <stat.icon className={`w-4 h-4 \${stat.color}`} />
-              </div>
-              <p className="text-2xl font-bold mt-2">{stat.value}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle>Professional Service Inquiries</CardTitle>
-            <CardDescription>Manage incoming requests for land surveying, valuation, and verification.</CardDescription>
-          </div>
-          <Badge variant="outline" className="text-blue-600 border-blue-200">New Inquiries</Badge>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Service</TableHead>
-                <TableHead>Client</TableHead>
-                <TableHead>Property/Location</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[
-                { service: "Land Surveying", client: "David Adeleke", loc: "Lekki Phase 1", status: "Urgent" },
-                { service: "Property Valuation", client: "Wizkid Balogun", loc: "Banana Island", status: "Pending" },
-                { service: "Land Verification", client: "Tiwa Savage", loc: "Epe, Lagos", status: "In Progress" },
-              ].map((req, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-semibold">{req.service}</TableCell>
-                  <TableCell>{req.client}</TableCell>
-                  <TableCell className="text-slate-500">{req.loc}</TableCell>
-                  <TableCell>
-                    <Badge className={
-                      req.status === "Urgent" ? "bg-red-50 text-red-700 border-red-100" :
-                      req.status === "In Progress" ? "bg-blue-50 text-blue-700 border-blue-100" :
-                      "bg-slate-50 text-slate-700 border-slate-100"
-                    }>
-                      {req.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button size="sm" variant="ghost" className="text-blue-600 hover:text-blue-700">Open Chat</Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
+      <h1 className="text-3xl font-display font-bold text-slate-900">Admin Console</h1>
       <Card>
         <CardHeader>
-          <CardTitle>Recent Identity Verification Requests</CardTitle>
-          <CardDescription>Manual review required for high-value accounts.</CardDescription>
+          <CardTitle>Professional Service Inquiries</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>User</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Documents</TableHead>
+                <TableHead>Client ID</TableHead>
+                <TableHead>Details</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {["Adekunle Gold", "Simi Kosoko", "Burna Boy"].map((name, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium">{name}</TableCell>
-                  <TableCell>{i === 0 ? "Agent" : "Seller"}</TableCell>
-                  <TableCell><Badge variant="outline">NIN, Utility Bill</Badge></TableCell>
-                  <TableCell><Badge className="bg-amber-100 text-amber-700">Awaiting Review</Badge></TableCell>
+              {requests?.map((req: any) => (
+                <TableRow key={req.id}>
+                  <TableCell className="font-mono text-xs">{req.userId}</TableCell>
+                  <TableCell>{req.details || "No details provided"}</TableCell>
+                  <TableCell><Badge>{req.status}</Badge></TableCell>
                   <TableCell className="text-right">
-                    <Button size="sm" variant="outline">Review</Button>
+                    <Button size="sm" variant="ghost">Manage</Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -339,288 +186,136 @@ function AdminDashboardView() {
   );
 }
 
-function AgentDashboardView({ listings, leads, handleCreateListing, setIsVerificationModalOpen, user }: any) {
-  const commissionData = [
-    { label: "Total Sales Value", value: "₦420,000,000", icon: Building2, color: "text-blue-600" },
-    { label: "Commission Earned (5%)", value: "₦21,000,000", icon: CheckCircle2, color: "text-green-600" },
-    { label: "Pending Payouts", value: "₦4,500,000", icon: Clock, color: "text-amber-600" },
-  ];
-
+// Professional View: For Agents and Sellers
+function ProfessionalDashboardView({ listings, conversations, requests, handleCreateListing, user }: any) {
   return (
     <>
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
         <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900">Agent Dashboard</h1>
+          <h1 className="text-3xl font-display font-bold text-slate-900">{user.role === 'agent' ? 'Agent' : 'Seller'} Dashboard</h1>
           <p className="text-slate-500">Manage your listings and track performance.</p>
         </div>
-        <div className="flex flex-col sm:flex-row items-center gap-3">
-          <div className="flex items-center gap-2 bg-green-50 border border-green-100 px-4 py-2 rounded-lg mr-2">
-            <ShieldCheck className="w-4 h-4 text-green-600" />
-            <div>
-              <p className="text-[10px] font-bold text-green-600 uppercase leading-none">Standard Policy</p>
-              <p className="text-sm font-bold text-green-900">5% Commission</p>
-            </div>
-          </div>
-          <Button onClick={handleCreateListing} size="lg" className="bg-blue-600 hover:bg-blue-700 gap-2">
-            <Plus className="w-5 h-5" />
-            Create New Listing
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        {commissionData.map((stat, i) => (
-          <div key={i} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-3 opacity-10">
-              <stat.icon className="w-12 h-12" />
-            </div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-slate-500 font-medium text-sm">{stat.label}</h3>
-              <stat.icon className={`w-5 h-5 \${stat.color}`} />
-            </div>
-            <p className="text-3xl font-bold text-slate-900">{stat.value}</p>
-          </div>
-        ))}
+        <Button onClick={handleCreateListing} size="lg" className="bg-blue-600 hover:bg-blue-700 gap-2">
+          <Plus className="w-5 h-5" />
+          Create New Listing
+        </Button>
       </div>
 
       <Tabs defaultValue="listings" className="space-y-6">
         <TabsList className="bg-slate-100 p-1">
-          <TabsTrigger value="listings" className="gap-2">
-            <Building2 className="w-4 h-4" /> Listings
-          </TabsTrigger>
-          <TabsTrigger value="chats" className="gap-2">
-            <MessageSquare className="w-4 h-4" /> Chats
-          </TabsTrigger>
-          <TabsTrigger value="verifications" className="gap-2">
-            <Clock className="w-4 h-4" /> Pending Verifications
-          </TabsTrigger>
+          <TabsTrigger value="listings" className="gap-2"><Building2 className="w-4 h-4" /> Listings</TabsTrigger>
+          <TabsTrigger value="chats" className="gap-2"><MessageSquare className="w-4 h-4" /> Chats</TabsTrigger>
+          <TabsTrigger value="requests" className="gap-2"><FileText className="w-4 h-4" /> Service History</TabsTrigger>
         </TabsList>
 
         <TabsContent value="listings">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="font-bold text-lg text-slate-900">Recent Listings</h3>
-              <p className="text-xs text-slate-500">All payouts calculated at <span className="font-bold text-blue-600">5% commission</span> rate.</p>
-            </div>
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
-                  <TableHead className="w-[400px]">Property</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Stats</TableHead>
-                  <TableHead>Date Added</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {listings.map((listing: any) => (
-                  <TableRow key={listing.id}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-slate-100 rounded-lg flex-shrink-0"></div>
-                        <div>
-                          <p className="text-slate-900 font-semibold">{listing.title}</p>
-                          <p className="text-xs text-slate-500">ID: {listing.id.toUpperCase()}</p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge 
-                        variant={
-                          listing.status === "Published" ? "default" : 
-                          listing.status === "Pending Review" ? "secondary" : "outline"
-                        }
-                        className={
-                          listing.status === "Published" ? "bg-green-100 text-green-700 hover:bg-green-100 shadow-none border-green-200" :
-                          listing.status === "Pending Review" ? "bg-amber-50 text-amber-700 hover:bg-amber-50 shadow-none border-amber-200" :
-                          "text-slate-500"
-                        }
-                      >
-                        {listing.status === "Published" && <CheckCircle2 className="w-3 h-3 mr-1" />}
-                        {listing.status === "Pending Review" && <Clock className="w-3 h-3 mr-1" />}
-                        {listing.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{listing.price}</TableCell>
-                    <TableCell>
-                      <div className="text-xs text-slate-500">
-                        <span className="font-medium text-slate-900">{listing.views}</span> views • 
-                        <span className="font-medium text-slate-900 ml-1">{listing.inquiries}</span> leads
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-slate-500 text-sm">{listing.date}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon">
-                        <MoreHorizontal className="w-4 h-4 text-slate-400" />
-                      </Button>
-                    </TableCell>
+          <Card>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Property</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Price</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {listings.length === 0 ? (
+                    <TableRow><TableCell colSpan={3} className="text-center py-10 text-slate-400">No listings yet.</TableCell></TableRow>
+                  ) : listings.map((listing: any) => (
+                    <TableRow key={listing.id}>
+                      <TableCell className="font-medium">{listing.title}</TableCell>
+                      <TableCell><Badge>{listing.status}</Badge></TableCell>
+                      <TableCell>₦{Number(listing.price).toLocaleString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="chats">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="md:col-span-1">
-              <CardHeader>
-                <CardTitle className="text-lg">Recent Conversations</CardTitle>
-                <CardDescription>Chat with potential buyers</CardDescription>
-              </CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-[400px]">
-                  {leads.map((lead: any) => (
-                    <div 
-                      key={lead.id} 
-                      className="p-4 border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
-                    >
-                      <div className="flex justify-between items-start mb-1">
-                        <p className="font-semibold text-slate-900">{lead.name}</p>
-                        <span className="text-[10px] text-slate-400 uppercase font-bold">{lead.date}</span>
-                      </div>
-                      <p className="text-xs text-blue-600 font-medium mb-1 truncate">{lead.property}</p>
-                      <p className="text-sm text-slate-500 truncate">{lead.message}</p>
-                    </div>
-                  ))}
-                </ScrollArea>
-              </CardContent>
-            </Card>
-            <Card className="md:col-span-2">
-              <div className="h-[520px] flex flex-col items-center justify-center text-center p-8">
-                <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4">
-                  <MessageSquare className="w-8 h-8 text-blue-600" />
-                </div>
-                <h3 className="text-lg font-bold text-slate-900">Select a conversation</h3>
-                <p className="text-slate-500 max-w-xs mx-auto mt-2">
-                  Click on a lead from the left to start chatting about your properties.
-                </p>
-              </div>
-            </Card>
-          </div>
+          <Card>
+            <CardContent className="p-8 text-center">
+              <MessageSquare className="w-12 h-12 text-blue-100 mx-auto mb-4" />
+              <p className="text-slate-500 mb-4">You have {conversations?.length || 0} active conversations.</p>
+              <Button asChild variant="outline">
+                <Link href="/messages">Open Messages</Link>
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
 
-        <TabsContent value="verifications">
-          <Card>
-            <CardHeader>
-              <CardTitle>Pending Property Verifications</CardTitle>
-              <CardDescription>Track the status of your listed properties currently being verified by our professionals.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                <div className="flex items-center gap-4 p-4 border border-slate-100 rounded-xl bg-slate-50/50">
-                  <div className="w-16 h-16 bg-slate-200 rounded-lg flex-shrink-0"></div>
-                  <div className="flex-1">
-                    <h4 className="font-bold text-slate-900">Unfinished Bungalow in Epe</h4>
-                    <div className="flex items-center gap-2 mt-1">
-                      <Badge variant="secondary" className="bg-amber-100 text-amber-700 hover:bg-amber-100 border-amber-200">Pending Review</Badge>
-                      <span className="text-xs text-slate-400">Submitted 2 days ago</span>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="sm">View Progress</Button>
-                </div>
-                <div className="text-center py-12">
-                  <p className="text-slate-400 italic">No other properties currently in verification.</p>
-                </div>
-              </div>
+        <TabsContent value="requests">
+           <Card>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Service</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Requested On</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {requests?.map((req: any) => (
+                    <TableRow key={req.id}>
+                      <TableCell className="font-medium">{req.service?.name}</TableCell>
+                      <TableCell><Badge variant="outline">{req.status}</Badge></TableCell>
+                      <TableCell className="text-slate-500 text-sm">{new Date(req.createdAt).toLocaleDateString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
-
-      {!user?.isVerified && (
-        <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
-          <div>
-            <h4 className="font-bold text-amber-800">Your account is not verified</h4>
-            <p className="text-sm text-amber-700 mt-1">
-              Unverified agents cannot publish listings. <button onClick={() => setIsVerificationModalOpen(true)} className="underline font-semibold hover:text-amber-900">Verify Identity now</button> to unlock full access.
-            </p>
-          </div>
-        </div>
-      )}
     </>
   );
 }
 
-function SellerDashboardView({ listings, handleCreateListing, user }: any) {
-  return (
-    <div className="space-y-8">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900">Seller Hub</h1>
-          <p className="text-slate-500">Manage your private property sales.</p>
-        </div>
-        <Button onClick={handleCreateListing} className="bg-blue-600">
-          <Plus className="w-4 h-4 mr-2" /> List Property
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">My Properties</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {listings.slice(0, 2).map((l: any) => (
-                <div key={l.id} className="flex items-center justify-between p-3 border rounded-lg">
-                  <div>
-                    <p className="font-semibold text-sm">{l.title}</p>
-                    <p className="text-xs text-slate-500">{l.price}</p>
-                  </div>
-                  <Badge variant="outline">{l.status}</Badge>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-lg">Market Interest</CardTitle>
-          </CardHeader>
-          <CardContent className="h-[200px] flex items-center justify-center text-slate-400 italic">
-            Visualizing interest in your properties...
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function BuyerDashboardView({ user }: any) {
+// User View: For Buyers and Renters
+function UserDashboardView({ user, conversations, requests }: any) {
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-display font-bold text-slate-900">My Justice City</h1>
-        <p className="text-slate-500">Saved properties and ongoing inquiries.</p>
+        <p className="text-slate-500">Track your saved properties and ongoing inquiries.</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-blue-600" /> Saved Properties
-            </CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Heart className="w-5 h-5 text-red-500" /> Saved Properties</CardTitle></CardHeader>
           <CardContent className="text-center py-8">
-            <p className="text-slate-400 text-sm">You haven't saved any properties yet.</p>
+            <p className="text-slate-400 text-sm">Browse the marketplace to save properties you like.</p>
             <Button asChild variant="link" className="mt-2 text-blue-600">
-              <Link href="/">Browse Marketplace</Link>
+              <Link href="/">Explore Listings</Link>
             </Button>
           </CardContent>
         </Card>
 
         <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <MessageSquare className="w-5 h-5 text-blue-600" /> Active Inquiries
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-center py-8">
-            <p className="text-slate-400 text-sm">Your conversation history will appear here.</p>
+          <CardHeader><CardTitle className="text-lg flex items-center gap-2"><MessageSquare className="w-5 h-5 text-blue-600" /> Recent Inquiries</CardTitle></CardHeader>
+          <CardContent>
+            {conversations?.length === 0 ? (
+              <p className="text-slate-400 text-sm text-center py-10">No active inquiries.</p>
+            ) : (
+              <div className="space-y-4">
+                {conversations?.slice(0, 3).map((convo: any) => (
+                  <div key={convo.id} className="flex justify-between items-center p-3 border rounded-xl hover:bg-slate-50 cursor-pointer transition-colors">
+                    <div>
+                      <p className="font-semibold text-slate-900">{convo.property?.title || 'Professional Inquiry'}</p>
+                      <p className="text-xs text-slate-500">Updated {new Date(convo.updatedAt).toLocaleDateString()}</p>
+                    </div>
+                    <Button asChild size="sm" variant="ghost" className="text-blue-600">
+                      <Link href="/messages">View Chat</Link>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

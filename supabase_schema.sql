@@ -1,5 +1,4 @@
 -- Profiles table to store additional user information
--- This table is linked to the Supabase Auth users table
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -23,6 +22,7 @@ CREATE TABLE IF NOT EXISTS public.properties (
   sqft INTEGER NOT NULL,
   image TEXT NOT NULL,
   agent JSONB NOT NULL,
+  owner_id UUID REFERENCES public.profiles(id),
   description TEXT NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -38,29 +38,79 @@ CREATE TABLE IF NOT EXISTS public.services (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- Conversations table
+CREATE TABLE IF NOT EXISTS public.conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  participant1_id UUID NOT NULL REFERENCES public.profiles(id),
+  participant2_id UUID NOT NULL REFERENCES public.profiles(id),
+  property_id UUID REFERENCES public.properties(id),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Messages table
+CREATE TABLE IF NOT EXISTS public.messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
+  sender_id UUID NOT NULL REFERENCES public.profiles(id),
+  content TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Service Requests table
+CREATE TABLE IF NOT EXISTS public.service_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id),
+  service_id UUID NOT NULL REFERENCES public.services(id),
+  details TEXT,
+  status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending', 'In Progress', 'Completed', 'Cancelled')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
 -- Enable Row Level Security
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.properties ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.service_requests ENABLE ROW LEVEL SECURITY;
 
--- Create policies for Profiles
+-- RLS Policies
 CREATE POLICY "Public profiles are viewable by everyone" ON public.profiles FOR SELECT USING (true);
 CREATE POLICY "Users can insert their own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
 CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = id);
 
--- Create policies for Properties
 CREATE POLICY "Properties are viewable by everyone" ON public.properties FOR SELECT USING (true);
-CREATE POLICY "Verified agents can insert properties" ON public.properties FOR INSERT WITH CHECK (
+CREATE POLICY "Agents can insert properties" ON public.properties FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND (role = 'agent' OR role = 'admin'))
+);
+
+CREATE POLICY "Services are viewable by everyone" ON public.services FOR SELECT USING (true);
+
+CREATE POLICY "Users can view their own conversations" ON public.conversations FOR SELECT USING (
+  auth.uid() = participant1_id OR auth.uid() = participant2_id
+);
+CREATE POLICY "Users can start conversations" ON public.conversations FOR INSERT WITH CHECK (
+  auth.uid() = participant1_id OR auth.uid() = participant2_id
+);
+
+CREATE POLICY "Users can view messages in their conversations" ON public.messages FOR SELECT USING (
   EXISTS (
-    SELECT 1 FROM public.profiles
-    WHERE id = auth.uid() AND (role = 'agent' OR role = 'admin')
+    SELECT 1 FROM public.conversations
+    WHERE id = conversation_id AND (participant1_id = auth.uid() OR participant2_id = auth.uid())
+  )
+);
+CREATE POLICY "Users can send messages" ON public.messages FOR INSERT WITH CHECK (
+  auth.uid() = sender_id AND EXISTS (
+    SELECT 1 FROM public.conversations
+    WHERE id = conversation_id AND (participant1_id = auth.uid() OR participant2_id = auth.uid())
   )
 );
 
--- Create policies for Services
-CREATE POLICY "Services are viewable by everyone" ON public.services FOR SELECT USING (true);
+CREATE POLICY "Users can view their own service requests" ON public.service_requests FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can create service requests" ON public.service_requests FOR INSERT WITH CHECK (auth.uid() = user_id);
 
--- Function to handle updated_at
+-- Updated at function & triggers
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -69,8 +119,5 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger for profiles updated_at
-CREATE TRIGGER set_updated_at
-BEFORE UPDATE ON public.profiles
-FOR EACH ROW
-EXECUTE FUNCTION public.handle_updated_at();
+CREATE TRIGGER set_profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+CREATE TRIGGER set_conversations_updated_at BEFORE UPDATE ON public.conversations FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();

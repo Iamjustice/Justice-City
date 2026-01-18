@@ -23,29 +23,26 @@ import {
 } from "lucide-react";
 import NotFound from "./not-found";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { useProperty } from "@/hooks/use-data";
+import { useProperty, useStartConversation } from "@/hooks/use-data";
 
 /**
  * PropertyDetails Component:
  * Displays detailed information about a specific real estate listing.
- * Includes image gallery, key features, verified documentation preview,
- * and agent contact options (chat, callback, tour).
  */
 export default function PropertyDetails() {
   const [match, params] = useRoute("/property/:id");
   const [, setLocation] = useLocation();
   const { user } = useAuth();
 
-  // UI state for modals, chat, and image carousel
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [activeConvoId, setActiveConvoId] = useState<string | null>(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isSaved, setIsSaved] = useState(false);
 
-  // Fetch the specific property by ID using Supabase hook
   const { data: property, isLoading } = useProperty(params?.id || "");
+  const startConversation = useStartConversation();
 
-  // Sync 'saved' state with local storage for visual persistence
   useEffect(() => {
     if (property) {
       const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
@@ -63,7 +60,6 @@ export default function PropertyDetails() {
 
   if (!property) return <NotFound />;
 
-  // Mock extra images for gallery demonstration
   const images = [
     property.image,
     "https://images.unsplash.com/photo-1600566752355-35792bedcfea?q=80&w=2070&auto=format&fit=crop",
@@ -71,29 +67,21 @@ export default function PropertyDetails() {
     "https://images.unsplash.com/photo-1600585154526-990dcea4db0d?q=80&w=2070&auto=format&fit=crop"
   ];
 
-  // Currency formatter for Naira
   const formatter = new Intl.NumberFormat('en-NG', {
     style: 'currency',
     currency: 'NGN',
     maximumFractionDigits: 0,
   });
 
-  // Carousel navigation handlers
   const nextImage = () => setCurrentImageIndex((prev) => (prev + 1) % images.length);
   const prevImage = () => setCurrentImageIndex((prev) => (prev - 1 + images.length) % images.length);
 
-  /**
-   * Universal handler for gated actions (Save, Chat, Call, Tour).
-   * Checks for authentication and identity verification status before proceeding.
-   */
-  const handleAction = (action: string) => {
-    // Requirement 1: User must be logged in
+  const handleAction = async (action: string) => {
     if (!user) {
       setLocation("/auth?mode=login");
       return;
     }
 
-    // Requirement 2: Handling 'save' toggle
     if (action === "save") {
       const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
       let newSaved;
@@ -107,15 +95,23 @@ export default function PropertyDetails() {
       return;
     }
 
-    // Requirement 3: User must be identity-verified for high-intent actions
     if (!user.isVerified) {
       setIsVerificationModalOpen(true);
       return;
     }
     
-    // Execute the requested action
     if (action === "chat") {
-      setIsChatOpen(true);
+      try {
+        const convo = await startConversation.mutateAsync({
+          participant1Id: user.id,
+          participant2Id: property.agent.id, // Agent ID from JSONB
+          propertyId: property.id,
+        });
+        setActiveConvoId(convo.id);
+        setIsChatOpen(true);
+      } catch (error) {
+        console.error("Failed to start chat", error);
+      }
     } else if (action === "call") {
       setLocation("/request-callback");
     } else if (action === "tour") {
@@ -125,26 +121,24 @@ export default function PropertyDetails() {
 
   return (
     <div className="min-h-screen bg-white pb-20 relative">
-      {/* Modal shown to unverified users attempting high-intent actions */}
       <VerificationModal 
         isOpen={isVerificationModalOpen} 
         onClose={() => setIsVerificationModalOpen(false)}
         triggerAction="contact the seller"
       />
 
-      {/* Floating Chat Interface Dialog */}
       <Dialog open={isChatOpen} onOpenChange={setIsChatOpen}>
         <DialogContent className="sm:max-w-md p-0 border-none bg-transparent shadow-none">
-          <div className="relative">
+          {activeConvoId && (
             <ChatInterface 
+              conversationId={activeConvoId}
               recipient={property.agent} 
               propertyTitle={property.title}
             />
-          </div>
+          )}
         </DialogContent>
       </Dialog>
 
-      {/* Hero Header with Image Gallery */}
       <div className="h-[400px] md:h-[600px] relative bg-slate-900 group">
         <img 
           src={images[currentImageIndex]} 
@@ -153,7 +147,6 @@ export default function PropertyDetails() {
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/40"></div>
         
-        {/* Gallery Controls */}
         <button 
           onClick={prevImage}
           className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/20 backdrop-blur-md text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/40"
@@ -171,7 +164,6 @@ export default function PropertyDetails() {
           {currentImageIndex + 1} / {images.length}
         </div>
 
-        {/* Dynamic Status Badges */}
         <div className="absolute top-6 left-6 flex gap-2">
           <span className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg uppercase tracking-wider">
             {property.type}
@@ -184,7 +176,6 @@ export default function PropertyDetails() {
           </span>
         </div>
 
-        {/* Pricing and Primary CTA Overlay */}
         <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between">
           <div className="bg-black/40 backdrop-blur-md px-6 py-3 rounded-2xl border border-white/10 shadow-2xl">
             <p className="text-white text-3xl font-bold font-display leading-none">
@@ -205,10 +196,8 @@ export default function PropertyDetails() {
         </div>
       </div>
 
-      {/* Main Content Area */}
       <div className="container mx-auto px-4 py-12 grid grid-cols-1 lg:grid-cols-3 gap-12">
         <div className="lg:col-span-2 space-y-10">
-          {/* Listing Title and Location */}
           <div className="space-y-4">
             <h1 className="text-4xl md:text-5xl font-display font-bold text-slate-900 tracking-tight">
               {property.title}
@@ -219,7 +208,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Quick Specs Grid (Bed, Bath, Sqft) */}
           <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 shadow-sm flex justify-between items-center">
             <div className="flex-1 text-center">
               <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Bedrooms</p>
@@ -246,7 +234,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Full Property Description */}
           <div className="prose prose-slate max-w-none">
             <h2 className="text-2xl font-display font-bold text-slate-900 mb-6">About this property</h2>
             <p className="text-slate-600 leading-relaxed text-xl font-light">
@@ -264,7 +251,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Verification Badges and Documentation Section */}
           <div className="bg-slate-900 rounded-3xl p-8 border border-slate-800 shadow-2xl">
             <h3 className="font-bold text-xl text-white mb-6 flex items-center gap-3">
               <ShieldCheck className="w-6 h-6 text-green-400" />
@@ -290,7 +276,6 @@ export default function PropertyDetails() {
                 </div>
               </div>
             </div>
-            {/* Warning for unverified users who cannot see full details */}
             {(!user || !user.isVerified) && (
               <div className="mt-6 p-4 bg-amber-500/10 border border-amber-500/20 text-amber-200 text-sm rounded-2xl flex gap-3 items-center">
                 <Lock className="w-5 h-5 shrink-0" />
@@ -300,7 +285,6 @@ export default function PropertyDetails() {
           </div>
         </div>
 
-        {/* Sidebar: Agent Information and Primary Actions */}
         <div className="lg:col-span-1">
           <div className="sticky top-24 space-y-8">
             <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl p-8">
@@ -323,14 +307,14 @@ export default function PropertyDetails() {
                 </div>
               </div>
 
-              {/* High-intent interaction buttons */}
               <div className="space-y-4">
                 <Button 
                   className="w-full h-14 text-lg gap-3 rounded-2xl font-bold bg-blue-600 hover:bg-blue-700 shadow-xl shadow-blue-600/20" 
                   size="lg"
                   onClick={() => handleAction("chat")}
+                  disabled={startConversation.isPending}
                 >
-                  <MessageSquare className="w-5 h-5" />
+                  {startConversation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <MessageSquare className="w-5 h-5" />}
                   Chat with Agent
                 </Button>
                 
@@ -355,7 +339,6 @@ export default function PropertyDetails() {
                 </Button>
               </div>
 
-              {/* Privacy/Safety disclaimer */}
               <div className="mt-8 pt-8 border-t border-slate-100">
                 <div className="flex items-center gap-2 justify-center mb-2">
                   <ShieldCheck className="w-4 h-4 text-green-600" />
