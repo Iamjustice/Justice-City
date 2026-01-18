@@ -1,5 +1,4 @@
 import { useRoute, useLocation } from "wouter";
-import { MOCK_PROPERTIES } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { VerificationModal } from "@/components/verification-modal";
@@ -17,13 +16,14 @@ import {
   Calendar,
   FileText,
   Check,
-  X,
   Heart,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Loader2
 } from "lucide-react";
 import NotFound from "./not-found";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { useProperty } from "@/hooks/use-data";
 
 export default function PropertyDetails() {
   const [match, params] = useRoute("/property/:id");
@@ -34,13 +34,22 @@ export default function PropertyDetails() {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isSaved, setIsSaved] = useState(false);
 
-  const property = MOCK_PROPERTIES.find(p => p.id === params?.id);
+  const { data: property, isLoading } = useProperty(params?.id || "");
 
   useEffect(() => {
-    // Mock check if property is saved in dashboard
-    const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-    setIsSaved(savedProperties.includes(property?.id));
-  }, [property?.id]);
+    if (property) {
+      const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
+      setIsSaved(savedProperties.includes(property.id));
+    }
+  }, [property]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
+      </div>
+    );
+  }
 
   if (!property) return <NotFound />;
 
@@ -102,18 +111,6 @@ export default function PropertyDetails() {
         triggerAction="contact the seller"
       />
 
-      {/* Floating Save Button - Mobile - Removed per request */}
-      <div className="hidden">
-        <Button 
-          onClick={() => handleAction("save")}
-          className={`w-14 h-14 rounded-full shadow-2xl transition-all ${
-            isSaved ? "bg-red-500 text-white" : "bg-white text-slate-400 hover:text-red-500"
-          } border border-slate-200`}
-        >
-          <Heart className={`w-6 h-6 ${isSaved ? "fill-current" : ""}`} />
-        </Button>
-      </div>
-
       {/* Chat Dialog */}
       <Dialog open={isChatOpen} onOpenChange={setIsChatOpen}>
         <DialogContent className="sm:max-w-md p-0 border-none bg-transparent shadow-none">
@@ -135,7 +132,6 @@ export default function PropertyDetails() {
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/40"></div>
         
-        {/* Gallery Controls */}
         <button 
           onClick={prevImage}
           className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/20 backdrop-blur-md text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/40"
@@ -149,12 +145,10 @@ export default function PropertyDetails() {
           <ChevronRight className="w-6 h-6" />
         </button>
 
-        {/* Image Counter */}
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/40 backdrop-blur-md text-white text-xs font-medium">
           {currentImageIndex + 1} / {images.length}
         </div>
 
-        {/* Top Badges */}
         <div className="absolute top-6 left-6 flex gap-2">
           <span className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg uppercase tracking-wider">
             {property.type}
@@ -167,11 +161,10 @@ export default function PropertyDetails() {
           </span>
         </div>
 
-        {/* Bottom Right Container */}
         <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between">
           <div className="bg-black/40 backdrop-blur-md px-6 py-3 rounded-2xl border border-white/10 shadow-2xl">
             <p className="text-white text-3xl font-bold font-display leading-none">
-              {formatter.format(property.price)}
+              {formatter.format(Number(property.price))}
             </p>
           </div>
           <Button 
@@ -189,9 +182,7 @@ export default function PropertyDetails() {
       </div>
 
       <div className="container mx-auto px-4 py-12 grid grid-cols-1 lg:grid-cols-3 gap-12">
-        {/* Left Column: Details */}
         <div className="lg:col-span-2 space-y-10">
-          {/* Header section moved here */}
           <div className="space-y-4">
             <h1 className="text-4xl md:text-5xl font-display font-bold text-slate-900 tracking-tight">
               {property.title}
@@ -202,7 +193,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Key Features */}
           <div className="bg-slate-50 border border-slate-100 rounded-3xl p-8 shadow-sm flex justify-between items-center">
             <div className="flex-1 text-center">
               <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Bedrooms</p>
@@ -229,7 +219,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Description */}
           <div className="prose prose-slate max-w-none">
             <h2 className="text-2xl font-display font-bold text-slate-900 mb-6">About this property</h2>
             <p className="text-slate-600 leading-relaxed text-xl font-light">
@@ -247,7 +236,6 @@ export default function PropertyDetails() {
             </div>
           </div>
 
-          {/* Verified Documents Preview */}
           <div className="bg-slate-900 rounded-3xl p-8 border border-slate-800 shadow-2xl">
             <h3 className="font-bold text-xl text-white mb-6 flex items-center gap-3">
               <ShieldCheck className="w-6 h-6 text-green-400" />
@@ -282,7 +270,6 @@ export default function PropertyDetails() {
           </div>
         </div>
 
-        {/* Right Column: Agent & Action Card */}
         <div className="lg:col-span-1">
           <div className="sticky top-24 space-y-8">
             <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl p-8">
@@ -305,7 +292,6 @@ export default function PropertyDetails() {
                 </div>
               </div>
 
-              {/* Gated Action Buttons */}
               <div className="space-y-4">
                 <Button 
                   className="w-full h-14 text-lg gap-3 rounded-2xl font-bold bg-blue-600 hover:bg-blue-700 shadow-xl shadow-blue-600/20" 
@@ -337,7 +323,6 @@ export default function PropertyDetails() {
                 </Button>
               </div>
 
-              {/* Safety Warning */}
               <div className="mt-8 pt-8 border-t border-slate-100">
                 <div className="flex items-center gap-2 justify-center mb-2">
                   <ShieldCheck className="w-4 h-4 text-green-600" />

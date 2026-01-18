@@ -8,10 +8,10 @@ import {
   ChevronRight, 
   Search as SearchIcon, 
   FileText,
-  Link as LinkIcon
+  Loader2
 } from "lucide-react";
 import { Link } from "wouter";
-import { MOCK_PROPERTIES } from "@/lib/mock-data";
+import { useProperties } from "@/hooks/use-data";
 import { PropertyCard } from "@/components/property-card";
 import { cn } from "@/lib/utils";
 import generatedImage from '@assets/generated_images/modern_trustworthy_city_skyline_for_real_estate_hero_background.png';
@@ -24,18 +24,21 @@ export default function Home() {
   const [priceFilter, setPriceFilter] = useState("Any");
   const [bedFilter, setBedFilter] = useState("Any");
 
-  const filteredProperties = MOCK_PROPERTIES.filter(p => {
+  const { data: properties, isLoading } = useProperties();
+
+  const filteredProperties = properties?.filter(p => {
     const matchesSearch = p.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
                          p.location.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = activeType === "Buy" ? p.type === "Sale" : 
                         activeType === "Rent" ? p.type === "Rent" :
-                        activeType === "Sell" ? false : true; // "Sell" would be user's own listings usually
+                        activeType === "Sell" ? false : true;
     
     let matchesPrice = true;
-    if (priceFilter === "Under ₦10M") matchesPrice = p.price < 10000000;
-    else if (priceFilter === "₦10M - ₦50M") matchesPrice = p.price >= 10000000 && p.price <= 50000000;
-    else if (priceFilter === "₦50M - ₦200M") matchesPrice = p.price > 50000000 && p.price <= 200000000;
-    else if (priceFilter === "Above ₦200M") matchesPrice = p.price > 200000000;
+    const price = Number(p.price);
+    if (priceFilter === "Under ₦10M") matchesPrice = price < 10000000;
+    else if (priceFilter === "₦10M - ₦50M") matchesPrice = price >= 10000000 && price <= 50000000;
+    else if (priceFilter === "₦50M - ₦200M") matchesPrice = price > 50000000 && price <= 200000000;
+    else if (priceFilter === "Above ₦200M") matchesPrice = price > 200000000;
 
     let matchesBeds = true;
     if (bedFilter !== "Any") {
@@ -44,7 +47,7 @@ export default function Home() {
     }
 
     return matchesSearch && matchesType && matchesPrice && matchesBeds;
-  });
+  }) || [];
 
   return (
     <div className="pb-20 min-h-screen">
@@ -196,11 +199,17 @@ export default function Home() {
           <Button variant="ghost" className="text-blue-600">View All</Button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {filteredProperties.slice(0, visibleCount).map((property) => (
-            <PropertyCard key={property.id} property={property} />
-          ))}
-        </div>
+        {isLoading ? (
+          <div className="flex justify-center py-20">
+            <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {filteredProperties.slice(0, visibleCount).map((property) => (
+              <PropertyCard key={property.id} property={property} />
+            ))}
+          </div>
+        )}
 
         {visibleCount < filteredProperties.length && (
           <div className="mt-12 text-center">

@@ -1,4 +1,4 @@
-import { Property } from "@/lib/mock-data";
+import { Property } from "@shared/schema";
 import { Link } from "wouter";
 import { MapPin, Bed, Bath, Expand, ShieldCheck, Heart } from "lucide-react";
 
@@ -31,7 +31,7 @@ export function PropertyCard({ property }: { property: Property }) {
             {/* Price and Save Button Overlay */}
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4 pt-12 flex items-end justify-between">
               <p className="text-white font-bold text-lg font-display">
-                {formatter.format(property.price)}
+                {formatter.format(Number(property.price))}
               </p>
               <button 
                 data-testid={`button-save-${property.id}`}
