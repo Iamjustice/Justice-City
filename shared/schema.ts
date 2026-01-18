@@ -1,16 +1,20 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, numeric, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, numeric, jsonb, timestamp, uuid } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+export const profiles = pgTable("profiles", {
+  id: uuid("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  role: text("role", { enum: ["buyer", "renter", "seller", "agent", "admin"] }).default("buyer"),
+  isVerified: boolean("is_verified").default(false),
+  avatar: text("avatar"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const properties = pgTable("properties", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull(),
   price: numeric("price").notNull(),
   location: text("location").notNull(),
@@ -26,28 +30,30 @@ export const properties = pgTable("properties", {
     image: string;
   }>(),
   description: text("description").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const services = pgTable("services", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   description: text("description").notNull(),
   icon: text("icon").notNull(),
   price: text("price").notNull(),
   turnaround: text("turnaround").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-});
-
+export const insertProfileSchema = createInsertSchema(profiles);
 export const insertPropertySchema = createInsertSchema(properties);
 export const insertServiceSchema = createInsertSchema(services);
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
+export type Profile = typeof profiles.$inferSelect;
+export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Property = typeof properties.$inferSelect;
-export type Service = typeof services.$inferSelect;
 export type InsertProperty = z.infer<typeof insertPropertySchema>;
+export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
+
+// Keep legacy User type for backward compatibility if needed, but point to Profile
+export type User = Profile;
+export type InsertUser = InsertProfile;

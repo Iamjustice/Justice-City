@@ -47,7 +47,8 @@ Justice City is a modern real estate platform designed with a focus on trust and
 ├── server/              # Backend Express application
 │   ├── index.ts         # Server entry point
 │   ├── routes.ts        # API route definitions
-│   ├── storage.ts       # Data storage interface and implementation
+│   ├── storage.ts       # Database storage interface and implementation
+│   ├── db.ts            # Drizzle database initialization
 │   └── static.ts        # Static file serving logic
 ├── shared/              # Shared types and schemas (Zod/Drizzle)
 │   └── schema.ts        # Database schema and validation types
@@ -60,7 +61,7 @@ Justice City is a modern real estate platform designed with a focus on trust and
 ### Prerequisites
 
 - Node.js (v18 or higher)
-- Supabase Project (URL and Anon Key)
+- Supabase Project (URL, Anon Key, and Database Password)
 
 ### Installation
 
@@ -73,8 +74,9 @@ Justice City is a modern real estate platform designed with a focus on trust and
 ### Supabase Setup
 
 1. Create a new project in the [Supabase Dashboard](https://app.supabase.com/).
-2. Run the SQL provided in `supabase_schema.sql` in the Supabase SQL Editor to set up the `profiles` table and RLS policies.
+2. Run the SQL provided in `supabase_schema.sql` in the Supabase SQL Editor to set up the tables and RLS policies.
 3. Copy your project URL and Anon Key from the Supabase settings.
+4. Obtain your database password (set during project creation).
 
 ### Configuration
 
@@ -82,11 +84,19 @@ Justice City is a modern real estate platform designed with a focus on trust and
    ```bash
    cp .env.example .env
    ```
-2. Fill in your Supabase credentials in the `.env` file:
+2. Fill in your Supabase credentials and database connection string in the `.env` file:
    ```env
    VITE_SUPABASE_URL=your_supabase_url
    VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+   DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-ID].supabase.co:5432/postgres
    ```
+
+### Database Migrations
+
+If you make changes to `shared/schema.ts`, you can push them to the database using:
+```bash
+npm run db:push
+```
 
 ### Running the Application
 
