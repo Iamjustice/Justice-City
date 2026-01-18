@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  role TEXT DEFAULT 'buyer' CHECK (role IN ('buyer', 'seller', 'agent', 'admin')),
+  role TEXT DEFAULT 'buyer' CHECK (role IN ('buyer', 'renter', 'seller', 'agent', 'admin')),
   is_verified BOOLEAN DEFAULT FALSE,
   avatar TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,

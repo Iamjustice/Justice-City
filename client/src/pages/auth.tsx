@@ -36,7 +36,7 @@ export default function AuthPage() {
     name: "",
     email: "",
     password: "",
-    role: "buyer" as "buyer" | "seller" | "agent" | "admin"
+    role: "buyer" as "buyer" | "renter" | "seller" | "agent" | "admin"
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -132,6 +132,7 @@ export default function AuthPage() {
                     onChange={(e) => setFormData({...formData, role: e.target.value as any})}
                   >
                     <option value="buyer">Buyer / Searcher</option>
+                    <option value="renter">Renter</option>
                     <option value="seller">Property Owner / Seller</option>
                     <option value="agent">Real Estate Agent</option>
                     <option value="admin">System Administrator</option>

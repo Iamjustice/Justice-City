@@ -3,7 +3,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "./supabase";
 import { User as SupabaseUser } from "@supabase/supabase-js";
 
-type UserRole = "buyer" | "seller" | "agent" | "admin" | null;
+type UserRole = "buyer" | "renter" | "seller" | "agent" | "admin" | null;
 
 interface UserProfile {
   id: string;
