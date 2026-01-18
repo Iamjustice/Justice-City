@@ -45,7 +45,23 @@ The current storage implementation is **in-memory only**:
 ```typescript
 export class MemStorage implements IStorage {
   private users: Map<string, User>;
-  // ... in-memory implementation
+
+  async getUser(id: string): Promise<User | undefined> {
+    return this.users.get(id);
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(
+      (user) => user.username === username
+    );
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const id = randomUUID();
+    const user: User = { ...insertUser, id };
+    this.users.set(id, user);
+    return user;
+  }
 }
 export const storage = new MemStorage();
 ```
@@ -122,8 +138,8 @@ export default defineConfig({
 | Dependencies | ✅ 3 packages | ❌ None | Replit |
 | Environment Variables | ✅ Used | ❌ None | Replit |
 | Database Connection | ❌ None | ❌ None | In-Memory |
-| Auth System | ❌ Passport.js | ❌ None | Custom |
-| Storage | ❌ MemStorage | ❌ None | In-Memory |
+| Auth System | ⚠️ Passport.js (alternative) | ❌ None | Custom |
+| Storage | ⚠️ MemStorage (temporary) | ❌ None | In-Memory |
 | Documentation | ✅ Config files | ✅ PRD only | Planned |
 
 ## Conclusion
