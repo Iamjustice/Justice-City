@@ -3,8 +3,12 @@ import { pgTable, text, varchar, integer, boolean, numeric, jsonb, timestamp, uu
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+/**
+ * Profiles table: Stores extended user information linked to Supabase Auth.
+ * This table holds the user's role and verification status.
+ */
 export const profiles = pgTable("profiles", {
-  id: uuid("id").primaryKey().notNull(),
+  id: uuid("id").primaryKey().notNull(), // Linked to auth.users.id
   name: text("name").notNull(),
   role: text("role", { enum: ["buyer", "renter", "seller", "agent", "admin"] }).default("buyer"),
   isVerified: boolean("is_verified").default(false),
@@ -13,10 +17,14 @@ export const profiles = pgTable("profiles", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+/**
+ * Properties table: Stores all real estate listings.
+ * Includes details like price, location, bedrooms, and agent info.
+ */
 export const properties = pgTable("properties", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull(),
-  price: numeric("price").notNull(),
+  price: numeric("price").notNull(), // Stored as numeric to handle large currency values accurately
   location: text("location").notNull(),
   type: text("type", { enum: ["Sale", "Rent"] }).notNull(),
   status: text("status", { enum: ["Published", "Pending", "Sold"] }).notNull().default("Published"),
@@ -33,6 +41,9 @@ export const properties = pgTable("properties", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/**
+ * Services table: Stores professional real estate services available to users.
+ */
 export const services = pgTable("services", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -43,10 +54,12 @@ export const services = pgTable("services", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Zod schemas for validating data before insertion
 export const insertProfileSchema = createInsertSchema(profiles);
 export const insertPropertySchema = createInsertSchema(properties);
 export const insertServiceSchema = createInsertSchema(services);
 
+// TypeScript types derived from the database schema
 export type Profile = typeof profiles.$inferSelect;
 export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Property = typeof properties.$inferSelect;
@@ -54,6 +67,9 @@ export type InsertProperty = z.infer<typeof insertPropertySchema>;
 export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
 
-// Keep legacy User type for backward compatibility if needed, but point to Profile
+/**
+ * Legacy support types
+ * These ensure backward compatibility with earlier iterations of the codebase
+ */
 export type User = Profile;
 export type InsertUser = InsertProfile;

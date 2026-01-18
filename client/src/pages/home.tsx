@@ -16,23 +16,36 @@ import { PropertyCard } from "@/components/property-card";
 import { cn } from "@/lib/utils";
 import generatedImage from '@assets/generated_images/modern_trustworthy_city_skyline_for_real_estate_hero_background.png';
 
+/**
+ * Home Component:
+ * The landing page of Justice City.
+ * Features a hero section, search functionality with filters, trust stats,
+ * a featured properties grid, and links to professional services.
+ */
 export default function Home() {
+  // State for search and filtering
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeType, setActiveType] = useState("Buy");
+  const [activeType, setActiveType] = useState("Buy"); // Buy or Rent
   const [showFilters, setShowFilters] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(8);
+  const [visibleCount, setVisibleCount] = useState(8); // Pagination control
   const [priceFilter, setPriceFilter] = useState("Any");
   const [bedFilter, setBedFilter] = useState("Any");
 
+  // Fetch live properties from Supabase
   const { data: properties, isLoading } = useProperties();
 
+  // Filter properties based on user input
   const filteredProperties = properties?.filter(p => {
+    // Basic text search on title and location
     const matchesSearch = p.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
                          p.location.toLowerCase().includes(searchTerm.toLowerCase());
+
+    // Filter by listing type (Sale vs Rent)
     const matchesType = activeType === "Buy" ? p.type === "Sale" : 
                         activeType === "Rent" ? p.type === "Rent" :
                         activeType === "Sell" ? false : true;
     
+    // Filter by price range
     let matchesPrice = true;
     const price = Number(p.price);
     if (priceFilter === "Under ₦10M") matchesPrice = price < 10000000;
@@ -40,6 +53,7 @@ export default function Home() {
     else if (priceFilter === "₦50M - ₦200M") matchesPrice = price > 50000000 && price <= 200000000;
     else if (priceFilter === "Above ₦200M") matchesPrice = price > 200000000;
 
+    // Filter by minimum bedroom count
     let matchesBeds = true;
     if (bedFilter !== "Any") {
       const minBeds = parseInt(bedFilter);
@@ -51,7 +65,7 @@ export default function Home() {
 
   return (
     <div className="pb-20 min-h-screen">
-      {/* Hero Section */}
+      {/* Hero Section: Eye-catching background and core value proposition */}
       <section className="relative min-h-[500px] md:h-[600px] flex items-center justify-center overflow-hidden bg-slate-900 py-20">
         <div className="absolute inset-0">
           <img 
@@ -78,7 +92,7 @@ export default function Home() {
             Justice City is the only real estate platform where every user and every property is verified. No fakes. No scams. Just real deals.
           </p>
 
-          {/* Search Bar */}
+          {/* Search Bar & Primary Filters */}
           <div className="max-w-3xl mx-auto flex flex-col gap-6">
             <div className="bg-white p-2 rounded-2xl shadow-2xl shadow-blue-900/20 flex flex-col md:flex-row gap-2">
               <div className="relative flex-1">
@@ -103,6 +117,7 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Advanced Filters: Conditionally rendered grid */}
             {showFilters && (
               <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-4 duration-300">
                 <div className="space-y-2">
@@ -170,7 +185,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Stats / Trust Signals */}
+      {/* Trust Stats Section: Reinforces platform reliability */}
       <section className="bg-white border-b border-slate-100">
         <div className="container mx-auto px-4 py-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
@@ -189,7 +204,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Listings Grid */}
+      {/* Featured Properties Grid: Main content area */}
       <section className="container mx-auto px-4 py-16">
         <div className="flex items-center justify-between mb-8">
           <div>
@@ -211,6 +226,7 @@ export default function Home() {
           </div>
         )}
 
+        {/* 'View More' pagination control */}
         {visibleCount < filteredProperties.length && (
           <div className="mt-12 text-center">
             <Button 
@@ -224,7 +240,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Professional Services Section */}
+        {/* Professional Services Highlights */}
         <div className="mt-20">
           <div className="flex flex-col md:flex-row items-center justify-between mb-10">
             <div>
@@ -274,10 +290,9 @@ export default function Home() {
         </div>
       </section>
       
-      {/* CTA Section */}
+      {/* Call to Action Section for Agents */}
       <section className="container mx-auto px-4 mb-8">
         <div className="bg-slate-900 rounded-3xl p-8 md:p-16 text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-8 relative overflow-hidden">
-          {/* Abstract Pattern Background */}
           <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500 rounded-full blur-[100px] opacity-20 translate-x-1/2 -translate-y-1/2"></div>
           
           <div className="relative z-10 max-w-xl">

@@ -10,6 +10,7 @@ import { useLocation } from "wouter";
 import { useServices } from "@/hooks/use-data";
 import { Service } from "@shared/schema";
 
+// Mapping service icon names to their respective Lucide icons
 const ICON_MAP: Record<string, any> = {
   ClipboardCheck,
   Compass,
@@ -17,15 +18,27 @@ const ICON_MAP: Record<string, any> = {
   Building2,
 };
 
+/**
+ * Services Component:
+ * Displays a catalog of professional real estate services available to users.
+ * Services include property valuation, land surveying, and more.
+ */
 export default function Services() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+
+  // Modal and dialog state
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
 
+  // Fetch live services from Supabase
   const { data: services, isLoading } = useServices();
 
+  /**
+   * Initiates a booking/inquiry flow for a service.
+   * Redirects to auth if not logged in, or shows verification modal if not verified.
+   */
   const handleBook = (service: Service) => {
     if (!user) {
       setLocation("/auth?mode=login");
@@ -41,12 +54,14 @@ export default function Services() {
 
   return (
     <div className="container mx-auto px-4 py-12">
+      {/* Informative modal for unverified users */}
       <VerificationModal 
         isOpen={isVerificationModalOpen} 
         onClose={() => setIsVerificationModalOpen(false)}
         triggerAction="book professional services"
       />
 
+      {/* Chat interface for service inquiries */}
       <Dialog open={isChatOpen} onOpenChange={setIsChatOpen}>
         <DialogContent className="sm:max-w-md p-0 border-none bg-transparent shadow-none">
           {selectedService && (
@@ -58,6 +73,7 @@ export default function Services() {
               }}
               propertyTitle={selectedService.name}
               initialMessage={
+                // Dynamic initial messages based on the selected service type
                 selectedService.name === "Land Surveying" 
                   ? "Hello! I saw you are interested in our professional services. Do you mind giving detail description of the type of survey service you want?"
                   : selectedService.name === "Property Valuation"
@@ -80,6 +96,7 @@ export default function Services() {
         </p>
       </div>
 
+      {/* Services Grid */}
       {isLoading ? (
         <div className="flex justify-center py-20">
           <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
@@ -129,7 +146,7 @@ export default function Services() {
         </div>
       )}
 
-      {/* Trust Banner */}
+      {/* Quality Guarantee Banner */}
       <div className="mt-16 bg-slate-900 rounded-3xl p-8 md:p-12 text-white relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-600/20 rounded-full blur-3xl"></div>
         <div className="relative z-10 flex flex-col md:flex-row items-center gap-8">

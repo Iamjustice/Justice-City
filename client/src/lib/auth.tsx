@@ -3,8 +3,15 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "./supabase";
 import { User as SupabaseUser } from "@supabase/supabase-js";
 
+/**
+ * Auth Context & Provider:
+ * This file manages the authentication state of the application using Supabase Auth.
+ * it provides functions for login, sign-up, logout, and identity verification.
+ */
+
 type UserRole = "buyer" | "renter" | "seller" | "agent" | "admin" | null;
 
+// Extended user profile structure
 interface UserProfile {
   id: string;
   name: string;
@@ -31,7 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
 
   useEffect(() => {
-    // Check active sessions and sets the user
+    // Check for an existing active session on initial load
     const fetchSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
@@ -42,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     fetchSession();
 
-    // Listen for changes on auth state (logged in, signed out, etc.)
+    // Subscribe to auth state changes (sign-in, sign-out, etc.)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
         await fetchProfile(session.user);
@@ -55,6 +62,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
+  /**
+   * Fetches user profile metadata from the public.profiles table.
+   * This metadata (role, verification status) is not part of the standard Supabase Auth user object.
+   */
   const fetchProfile = async (supabaseUser: SupabaseUser) => {
     try {
       const { data, error } = await supabase
@@ -77,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           avatar: data.avatar,
         });
       } else {
-        // Handle case where auth user exists but profile doesn't yet
+        // Fallback for cases where Auth user exists but Profile record is missing
         setUser({
           id: supabaseUser.id,
           name: supabaseUser.email?.split('@')[0] || 'User',
@@ -91,6 +102,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /**
+   * Logs in an existing user using email and password.
+   */
   const login = async (email: string, password: string) => {
     setIsLoading(true);
     const { error } = await supabase.auth.signInWithPassword({
@@ -114,6 +128,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  /**
+   * Signs up a new user and creates their associated profile record.
+   */
   const signUp = async (email: string, password: string, profile: Omit<UserProfile, "id">) => {
     setIsLoading(true);
     const { data: { user: supabaseUser }, error } = await supabase.auth.signUp({
@@ -132,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (supabaseUser) {
-      // Create profile in our database
+      // Create the profile metadata record in the public database
       const { error: profileError } = await supabase
         .from('profiles')
         .insert([
@@ -157,6 +174,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   };
 
+  /**
+   * Logs out the current user.
+   */
   const logout = async () => {
     const { error } = await supabase.auth.signOut();
     if (error) {
@@ -173,12 +193,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /**
+   * Simulates/Triggers identity verification for the user profile.
+   * Updates the is_verified status in the database.
+   */
   const verifyIdentity = async () => {
     if (!user) return;
 
     setIsLoading(true);
-    // In a real app, this would trigger a verification flow (e.g., Stripe Identity or similar)
-    // For now, we'll just update the profile in Supabase
     const { error } = await supabase
       .from('profiles')
       .update({ is_verified: true })
@@ -208,6 +230,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// Hook for accessing authentication state and methods
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {

@@ -8,20 +8,26 @@ import { ShieldCheck, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 
+/**
+ * AuthPage Component:
+ * Handles user authentication including Sign-Up and Log-In flows.
+ * Users can choose their role (Buyer, Renter, Seller, Agent, Admin) during sign-up.
+ */
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
   const [isSignUp, setIsSignUp] = useState(true);
   const { login, signUp, user, isLoading: authLoading } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Sync mode (login/signup) with URL query parameters
   useEffect(() => {
-    // Check if we should start in login mode
     const params = new URLSearchParams(window.location.search);
     if (params.get("mode") === "login") {
       setIsSignUp(false);
     }
   }, []);
 
+  // Redirect user once they are successfully authenticated
   useEffect(() => {
     if (user) {
       if (isSignUp) {
@@ -32,6 +38,7 @@ export default function AuthPage() {
     }
   }, [user, isSignUp, setLocation]);
 
+  // Local state for authentication form
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -39,6 +46,7 @@ export default function AuthPage() {
     role: "buyer" as "buyer" | "renter" | "seller" | "agent" | "admin"
   });
 
+  // Handle form submission: calls signUp or login based on current mode
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -61,6 +69,7 @@ export default function AuthPage() {
     }
   };
 
+  // Show global loading spinner while checking authentication state
   if (authLoading && !isSubmitting) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -87,6 +96,8 @@ export default function AuthPage() {
               : "Enter your credentials to access your account"}
           </CardDescription>
         </CardHeader>
+
+        {/* Toggle between Sign Up and Log In modes */}
         <div className="p-1 px-6 flex justify-center">
           <div className="flex bg-slate-100 p-1 rounded-lg w-full max-w-xs">
             <button
@@ -109,6 +120,7 @@ export default function AuthPage() {
             </button>
           </div>
         </div>
+
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
             {isSignUp && (
