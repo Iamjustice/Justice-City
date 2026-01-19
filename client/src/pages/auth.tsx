@@ -83,9 +83,11 @@ export default function AuthPage() {
       <Card className="w-full max-w-md shadow-xl border-slate-200 overflow-hidden">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
-            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
-              <ShieldCheck className="w-8 h-8" />
-            </div>
+            <img
+              src="/assets/logo-black.png"
+              alt="Justice City"
+              className="h-12 w-auto"
+            />
           </div>
           <CardTitle className="text-2xl font-display font-bold">
             {isSignUp ? "Create an account" : "Welcome back"}

@@ -34,13 +34,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-50 w-full border-b bg-white">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-blue-600/20 group-hover:scale-105 transition-transform">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <span className="font-display font-bold text-xl tracking-tight text-slate-900">
-              Justice City
-            </span>
+          <Link href="/" className="flex items-center group">
+            <img
+              src="/assets/logo-black.png"
+              alt="Justice City"
+              className="h-10 w-auto group-hover:scale-105 transition-transform"
+            />
           </Link>
 
           {/* Desktop Nav */}
@@ -225,11 +224,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="container mx-auto px-4">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 bg-slate-900 rounded text-white flex items-center justify-center">
-                  <ShieldCheck className="w-4 h-4" />
-                </div>
-                <span className="font-display font-bold text-lg text-slate-900">Justice City</span>
+              <div className="flex items-center">
+                <img
+                  src="/assets/logo-black.png"
+                  alt="Justice City"
+                  className="h-8 w-auto"
+                />
               </div>
               <p className="text-sm text-slate-500 max-w-xs">
                 Restoring trust in real estate through mandatory identity and property verification.

@@ -1,118 +1,78 @@
-# Justice City - Trust-First Real Estate Marketplace
+# Justice City: Trust-First Real Estate Marketplace
 
-Justice City is a modern real estate platform designed with a focus on trust and verification. It aims to eliminate scams and fake listings by ensuring every user and every property on the platform is verified.
+Justice City is a verified real estate platform dedicated to restoring trust in the Nigerian property market. By enforcing mandatory identity verification (KYC) and property title verification, we eliminate fraud and ensure a secure environment for buyers, renters, owners, and agents.
 
-## Features
+## 🚀 Key Features
 
-- **Verified Property Listings**: Browse a wide range of properties (Buy, Rent) with verified documentation.
-- **Advanced Search & Filtering**: Find the perfect property using filters for price, bedrooms, and property type.
-- **Identity & Trust System**: Built-in verification using Supabase Auth for agents and users to build instant trust.
-- **Professional Services**: Access verified experts for:
-  - Land Surveying
-  - Property Valuation
-  - Land Verification
-- **User Dashboard**: Manage your profile, listings, and saved properties.
-- **Interactive Tour Scheduling**: Request property tours directly through the platform.
-- **Responsive Design**: Fully responsive UI built with Tailwind CSS and Framer Motion.
+- **Mandatory Identity Verification:** Integrated with **Smile ID** for biometric KYC (facial recognition and document verification).
+- **Property Title Verification:** All listings undergo a rigorous verification process by qualified legal and land professionals.
+- **Role-Based Access Control:** Secure dashboards for Buyers, Renters, Property Owners, Real Estate Agents, and System Administrators.
+- **Real-Time Communication:** Direct, secure messaging between verified parties.
+- **Secure Marketplace:** Verified listings for sales and rentals with transparent history.
 
-## Tech Stack
+## 🛠 Tech Stack
 
-### Frontend
-- **React 19**: Modern UI library.
-- **Vite**: Ultra-fast frontend build tool.
-- **Wouter**: Minimalist routing.
-- **TanStack Query**: Powerful data fetching and state management.
-- **Tailwind CSS**: Utility-first CSS framework.
-- **Shadcn UI**: High-quality accessible components.
-- **Framer Motion**: Smooth animations and transitions.
-- **Lucide React**: Beautiful, consistent icons.
-- **Supabase Auth**: Secure user authentication and management.
+- **Frontend:** React 19, Vite, TanStack Query, Tailwind CSS, Lucide React, Wouter.
+- **Backend:** Node.js, Express.
+- **Database & Auth:** Supabase (PostgreSQL, Auth, Storage, Edge Functions).
+- **ORM:** Drizzle ORM for type-safe database interactions.
+- **Verification:** Smile ID Web SDK for biometric identity capture.
 
-### Backend
-- **Express**: Robust Node.js web framework.
-- **Drizzle ORM**: Next-generation TypeScript ORM.
-- **PostgreSQL (Supabase)**: Reliable relational database.
-- **Zod**: TypeScript-first schema validation.
+## 📁 Project Structure
 
-## Project Structure
-
-```
+```text
 ├── client/              # Frontend React application
+│   ├── public/assets/   # Branding assets (logos, icons)
 │   ├── src/
-│   │   ├── components/  # Reusable UI components
+│   │   ├── components/  # Reusable UI components (shadcn/ui)
 │   │   ├── hooks/       # Custom React hooks
-│   │   ├── lib/         # Utility functions, API clients, and Auth
-│   │   ├── pages/       # Route components
-│   │   └── App.tsx      # Main application entry and routing
+│   │   ├── lib/         # Utility functions and API clients (Supabase, Auth)
+│   │   ├── pages/       # Page components (Marketplace, Verify, Dashboard, etc.)
+│   │   └── App.tsx      # Main application routing
 ├── server/              # Backend Express application
-│   ├── index.ts         # Server entry point
+│   ├── db/              # Database schema and Drizzle configuration
 │   ├── routes.ts        # API route definitions
-│   ├── storage.ts       # Database storage interface and implementation
-│   ├── db.ts            # Drizzle database initialization
-│   └── static.ts        # Static file serving logic
-├── shared/              # Shared types and schemas (Zod/Drizzle)
-│   └── schema.ts        # Database schema and validation types
-├── script/              # Build and utility scripts
-└── public/              # Static assets
+│   └── index.ts         # Server entry point
+└── drizzle/             # Database migrations
 ```
 
-## Getting Started
+## 🛠 Setup & Installation
 
-### Prerequisites
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd justice-city
+   ```
 
-- Node.js (v18 or higher)
-- Supabase Project (URL, Anon Key, and Database Password)
-
-### Installation
-
-1. Clone the repository
-2. Install dependencies:
+2. **Install dependencies:**
    ```bash
    npm install
    ```
 
-### Supabase Setup
+3. **Environment Configuration:**
+   Create a `.env` file in the root directory and provide the following variables:
+   - `VITE_SUPABASE_URL`: Your Supabase Project URL.
+   - `VITE_SUPABASE_ANON_KEY`: Your Supabase Anonymous Key.
+   - `DATABASE_URL`: Connection string for your Supabase PostgreSQL database.
+   - `SMILE_ID_API_KEY`: (Optional) Your Smile ID API key for enhanced verification.
 
-1. Create a new project in the [Supabase Dashboard](https://app.supabase.com/).
-2. Run the SQL provided in `supabase_schema.sql` in the Supabase SQL Editor to set up the tables and RLS policies.
-3. Copy your project URL and Anon Key from the Supabase settings.
-4. Obtain your database password (set during project creation).
-
-### Configuration
-
-1. Copy `.env.example` to `.env`:
+4. **Database Migration:**
    ```bash
-   cp .env.example .env
-   ```
-2. Fill in your Supabase credentials and database connection string in the `.env` file:
-   ```env
-   VITE_SUPABASE_URL=your_supabase_url
-   VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-   DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-ID].supabase.co:5432/postgres
+   npm run db:push
    ```
 
-### Database Migrations
-
-If you make changes to `shared/schema.ts`, you can push them to the database using:
-```bash
-npm run db:push
-```
-
-### Running the Application
-
-1. Start the development server:
+5. **Start the development server:**
    ```bash
    npm run dev
    ```
-   The application will be available at `http://localhost:5000`.
 
-### Build for Production
+## 🛡 Verification Flow
 
-```bash
-npm run build
-npm start
-```
+1. **User Registration:** Users sign up and select their primary role.
+2. **Smile ID KYC:** Users are directed to the `/verify` page to complete biometric identity capture.
+3. **Document Submission:** Property owners and agents must submit proof of identity and professional credentials.
+4. **Approval:** Administrators review the submissions to grant "Verified" status.
 
-## License
+## 📄 License
 
-MIT
+© 2026 Justice City Ltd. All rights reserved.
