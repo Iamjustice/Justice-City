@@ -24,6 +24,18 @@ CREATE TABLE IF NOT EXISTS public.properties (
   agent JSONB NOT NULL,
   owner_id UUID REFERENCES public.profiles(id),
   description TEXT NOT NULL,
+  is_title_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Property Documents table
+CREATE TABLE IF NOT EXISTS public.property_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  property_id UUID NOT NULL REFERENCES public.properties(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  file_url TEXT NOT NULL,
+  document_type TEXT NOT NULL CHECK (document_type IN ('C_OF_O', 'SURVEY_PLAN', 'DEED_OF_ASSIGNMENT', 'OTHER')),
+  is_verified BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -70,6 +82,7 @@ CREATE TABLE IF NOT EXISTS public.service_requests (
 -- Enable Row Level Security
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.properties ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.property_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.services ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
@@ -92,7 +105,24 @@ CREATE POLICY "Properties are viewable by everyone" ON public.properties FOR SEL
 
 DROP POLICY IF EXISTS "Agents can insert properties" ON public.properties;
 CREATE POLICY "Agents can insert properties" ON public.properties FOR INSERT WITH CHECK (
-  EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND (role = 'agent' OR role = 'admin'))
+  EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND (role = 'agent' OR role = 'admin' OR role = 'seller'))
+);
+
+-- Property Documents
+DROP POLICY IF EXISTS "Property documents are viewable by owners and admins" ON public.property_documents;
+CREATE POLICY "Property documents are viewable by owners and admins" ON public.property_documents FOR SELECT USING (
+  EXISTS (
+    SELECT 1 FROM public.properties
+    WHERE id = property_id AND (owner_id = auth.uid() OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'))
+  )
+);
+
+DROP POLICY IF EXISTS "Owners can upload property documents" ON public.property_documents;
+CREATE POLICY "Owners can upload property documents" ON public.property_documents FOR INSERT WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM public.properties
+    WHERE id = property_id AND owner_id = auth.uid()
+  )
 );
 
 -- Services
@@ -148,3 +178,15 @@ CREATE TRIGGER set_profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH
 
 DROP TRIGGER IF EXISTS set_conversations_updated_at ON public.conversations;
 CREATE TRIGGER set_conversations_updated_at BEFORE UPDATE ON public.conversations FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- STORAGE SETUP (To be run in Supabase SQL Editor if needed, but usually handled via dashboard)
+-- INSERT INTO storage.buckets (id, name, public) VALUES ('property-images', 'property-images', true) ON CONFLICT (id) DO NOTHING;
+-- INSERT INTO storage.buckets (id, name, public) VALUES ('property-documents', 'property-documents', false) ON CONFLICT (id) DO NOTHING;
+
+-- Storage Policies for property-images (Public)
+-- CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING (bucket_id = 'property-images');
+-- CREATE POLICY "Authenticated users can upload images" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'property-images' AND auth.role() = 'authenticated');
+
+-- Storage Policies for property-documents (Private)
+-- CREATE POLICY "Owners can view their own documents" ON storage.objects FOR SELECT USING (bucket_id = 'property-documents' AND (auth.uid() = owner));
+-- CREATE POLICY "Owners can upload their own documents" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'property-documents' AND auth.role() = 'authenticated');

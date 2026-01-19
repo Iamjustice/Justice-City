@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import {
-  Property, Service, Conversation, Message, ServiceRequest, Profile,
+  Property, Service, Conversation, Message, ServiceRequest, Profile, PropertyDocument,
   InsertMessage, InsertConversation, InsertServiceRequest
 } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
@@ -9,7 +9,6 @@ import { queryClient } from "@/lib/queryClient";
 /**
  * Data Fetching and Mutation Hooks:
  * Using Supabase client for data fetching to benefit from RLS.
- * Note: Returned data is mapped from snake_case (DB) to camelCase (Frontend) where necessary.
  */
 
 // --- Properties ---
@@ -24,10 +23,10 @@ export function useProperties() {
 
       if (error) throw error;
 
-      // Map database snake_case to frontend camelCase
       return data.map((p: any) => ({
         ...p,
         ownerId: p.owner_id,
+        isTitleVerified: p.is_title_verified,
         createdAt: p.created_at,
       })) as Property[];
     },
@@ -49,10 +48,54 @@ export function useProperty(id: string) {
       return {
         ...data,
         ownerId: data.owner_id,
+        isTitleVerified: data.is_title_verified,
         createdAt: data.created_at,
       } as Property;
     },
     enabled: !!id,
+  });
+}
+
+// --- Property Documents ---
+export function usePropertyDocuments(propertyId: string) {
+  return useQuery<PropertyDocument[]>({
+    queryKey: ["/api/properties", propertyId, "documents"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("property_documents")
+        .select("*")
+        .eq("property_id", propertyId);
+
+      if (error) throw error;
+      return data.map((d: any) => ({
+        ...d,
+        propertyId: d.property_id,
+        fileUrl: d.file_url,
+        documentType: d.document_type,
+        isVerified: d.is_verified,
+        createdAt: d.created_at,
+      })) as PropertyDocument[];
+    },
+    enabled: !!propertyId,
+  });
+}
+
+// --- File Storage ---
+export function useUploadFile() {
+  return useMutation({
+    mutationFn: async ({ file, bucket, path }: { file: File, bucket: string, path: string }) => {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(path, file, { upsert: true });
+
+      if (error) throw error;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(data.path);
+
+      return publicUrl;
+    },
   });
 }
 
@@ -109,6 +152,7 @@ export function useConversations(userId?: string) {
         property: c.property ? {
           ...c.property,
           ownerId: c.property.owner_id,
+          isTitleVerified: c.property.is_title_verified,
           createdAt: c.property.created_at,
         } : null,
       })) as Conversation[];
@@ -155,7 +199,6 @@ export function useSendMessage() {
 
       if (error) throw error;
 
-      // Also update conversation updatedAt
       await supabase
         .from("conversations")
         .update({ updated_at: new Date().toISOString() })
@@ -178,7 +221,6 @@ export function useSendMessage() {
 export function useStartConversation() {
   return useMutation({
     mutationFn: async (convo: InsertConversation) => {
-      // First check if it exists
       const { data: existing } = await supabase
         .from("conversations")
         .select("*")

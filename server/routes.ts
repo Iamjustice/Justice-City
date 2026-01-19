@@ -2,6 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { submitSmileIDJob } from "./smileid";
+import { db } from "./db";
+import { propertyDocuments } from "@shared/schema";
 
 /**
  * Route Registration:
@@ -22,6 +24,17 @@ export async function registerRoutes(
     const prop = await storage.getProperty(req.params.id);
     if (!prop) return res.status(404).json({ message: "Property not found" });
     res.json(prop);
+  });
+
+  app.post("/api/properties", async (req, res) => {
+    const prop = await storage.createProperty(req.body);
+    res.status(201).json(prop);
+  });
+
+  // Property Documents
+  app.post("/api/property-documents", async (req, res) => {
+    const doc = await db.insert(propertyDocuments).values(req.body).returning();
+    res.status(201).json(doc[0]);
   });
 
   // Services
@@ -76,8 +89,6 @@ export async function registerRoutes(
     }
 
     try {
-      // In a real sandbox, we might not have SMILE_ID keys yet
-      // so we simulate success if keys are missing
       if (!process.env.SMILE_ID_API_KEY) {
         console.log("SMILE_ID_API_KEY missing, simulating verification success");
         await storage.updateProfile(userId, { isVerified: true });
@@ -86,8 +97,7 @@ export async function registerRoutes(
 
       const result = await submitSmileIDJob(userId, jobType || 1, images);
 
-      // If Smile ID confirms success, update user profile
-      if (result.result.result_code === '1012') { // Result code for success in many Smile ID jobs
+      if (result.result.result_code === '1012') {
         await storage.updateProfile(userId, { isVerified: true });
       }
 

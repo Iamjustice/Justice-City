@@ -29,15 +29,29 @@ export const properties = pgTable("properties", {
   bedrooms: integer("bedrooms").notNull(),
   bathrooms: integer("bathrooms").notNull(),
   sqft: integer("sqft").notNull(),
-  image: text("image").notNull(),
+  image: text("image").notNull(), // Primary image URL
   agent: jsonb("agent").notNull().$type<{
     name: string;
     verified: boolean;
     image: string;
-    id: string; // Added ID to link to profiles
+    id: string;
   }>(),
   description: text("description").notNull(),
-  ownerId: uuid("owner_id").references(() => profiles.id), // Added link to owner
+  ownerId: uuid("owner_id").references(() => profiles.id),
+  isTitleVerified: boolean("is_title_verified").default(false).notNull(), // Added Title Verification Status
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+/**
+ * Property Documents table: Tracks verification documents for listings.
+ */
+export const propertyDocuments = pgTable("property_documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  propertyId: uuid("property_id").references(() => properties.id).notNull(),
+  name: text("name").notNull(), // e.g. "Certificate of Occupancy"
+  fileUrl: text("file_url").notNull(),
+  documentType: text("document_type", { enum: ["C_OF_O", "SURVEY_PLAN", "DEED_OF_ASSIGNMENT", "OTHER"] }).notNull(),
+  isVerified: boolean("is_verified").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -92,6 +106,7 @@ export const serviceRequests = pgTable("service_requests", {
 // Zod schemas
 export const insertProfileSchema = createInsertSchema(profiles);
 export const insertPropertySchema = createInsertSchema(properties);
+export const insertPropertyDocumentSchema = createInsertSchema(propertyDocuments);
 export const insertServiceSchema = createInsertSchema(services);
 export const insertConversationSchema = createInsertSchema(conversations);
 export const insertMessageSchema = createInsertSchema(messages);
@@ -102,6 +117,8 @@ export type Profile = typeof profiles.$inferSelect;
 export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Property = typeof properties.$inferSelect;
 export type InsertProperty = z.infer<typeof insertPropertySchema>;
+export type PropertyDocument = typeof propertyDocuments.$inferSelect;
+export type InsertPropertyDocument = z.infer<typeof insertPropertyDocumentSchema>;
 export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
 export type Conversation = typeof conversations.$inferSelect;
