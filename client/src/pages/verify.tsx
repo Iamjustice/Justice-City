@@ -7,9 +7,7 @@ import { useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/queryClient";
 
 // Import Smile ID Web Components
-// Note: In a real environment, these would be loaded via the @smileid/web-components package
-// The beta SDK uses custom elements like <smile-id-selfie-capture>
-import "@smileid/web-components";
+import "@smileid/web-components/smart-camera-web";
 
 /**
  * VerificationPage Component:
