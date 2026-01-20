@@ -71,59 +71,78 @@ export default function Home() {
           <img 
             src={generatedImage}
             alt="City Skyline" 
-            className="w-full h-full object-cover opacity-50"
+            className="w-full h-full object-cover opacity-60 mix-blend-overlay"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent"></div>
+          <div className="absolute inset-0 bg-gradient-to-b from-slate-900/80 via-slate-900/40 to-slate-900"></div>
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
-          <div className="inline-block mb-4 px-4 py-1.5 rounded-full bg-blue-500/10 border border-blue-400/20 backdrop-blur-md">
-            <span className="text-blue-200 font-semibold text-sm tracking-wide uppercase">
+          <div className="inline-block mb-6 px-4 py-1.5 rounded-full bg-blue-500/20 border border-blue-400/30 backdrop-blur-md">
+            <span className="text-blue-100 font-bold text-xs tracking-widest uppercase">
               The Trust-First Marketplace
             </span>
           </div>
-          <h1 className="text-4xl md:text-6xl font-display font-bold text-white mb-6 leading-tight">
+          <h1 className="text-5xl md:text-7xl font-display font-bold text-white mb-6 leading-[1.1] tracking-tight">
             Find Your Home. <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-green-400">
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-cyan-300 to-blue-500">
               Verify The Truth.
             </span>
           </h1>
-          <p className="text-lg text-slate-300 mb-10 max-w-2xl mx-auto">
+          <p className="text-xl text-slate-300 mb-12 max-w-2xl mx-auto leading-relaxed">
             Justice City is the only real estate platform where every user and every property is verified. No fakes. No scams. Just real deals.
           </p>
 
           {/* Search Bar & Primary Filters */}
-          <div className="max-w-3xl mx-auto flex flex-col gap-6">
-            <div className="bg-white p-2 rounded-2xl shadow-2xl shadow-blue-900/20 flex flex-col md:flex-row gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+          <div className="max-w-4xl mx-auto space-y-4">
+            <div className="bg-white p-2 rounded-2xl shadow-2xl shadow-blue-900/40 flex flex-col md:flex-row items-center gap-2">
+              <div className="relative flex-1 w-full">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                 <Input 
                   placeholder="Search by location, price, or property type..." 
-                  className="pl-10 h-12 border-transparent bg-transparent focus-visible:ring-0 text-base"
+                  className="pl-12 h-14 border-transparent bg-transparent focus-visible:ring-0 text-lg placeholder:text-slate-400"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
-              <div className="flex gap-2">
-                <Button 
-                  variant={showFilters ? "default" : "outline"} 
-                  size="lg" 
-                  className={cn("h-12 px-6 hidden md:flex gap-2 transition-all", showFilters && "bg-slate-900 text-white")}
-                  onClick={() => setShowFilters(!showFilters)}
-                >
-                  <SlidersHorizontal className="w-4 h-4" />
-                  Filters
-                </Button>
+              <Button
+                variant="ghost"
+                size="lg"
+                className={cn(
+                  "h-14 px-6 gap-2 text-slate-600 hover:bg-slate-50 transition-all rounded-xl",
+                  showFilters && "bg-slate-100 text-blue-600"
+                )}
+                onClick={() => setShowFilters(!showFilters)}
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                <span>Filters</span>
+              </Button>
+            </div>
+
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+              <div className="flex items-center bg-white/10 backdrop-blur-xl p-1.5 rounded-2xl border border-white/20 w-full md:w-auto shadow-xl">
+                {["Buy", "Rent", "Sell"].map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => setActiveType(type)}
+                    className="flex-1 md:flex-none px-10 py-3 rounded-xl text-sm font-bold transition-all hover:bg-white/5 text-slate-300 data-[active=true]:bg-blue-600 data-[active=true]:text-white data-[active=true]:shadow-lg active:scale-95"
+                    data-active={activeType === type}
+                  >
+                    {type}
+                  </button>
+                ))}
               </div>
+              <Button size="lg" className="h-[60px] w-full md:w-auto md:px-16 bg-blue-600 hover:bg-blue-500 font-bold text-xl shadow-2xl shadow-blue-600/40 transition-all hover:scale-[1.02] active:scale-[0.98] rounded-2xl">
+                Search Properties
+              </Button>
             </div>
 
             {/* Advanced Filters: Conditionally rendered grid */}
             {showFilters && (
-              <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-4 duration-300">
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-700">Price Range</label>
+              <div className="bg-white p-8 rounded-3xl shadow-2xl border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-8 animate-in zoom-in-95 fade-in duration-300 text-left">
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Price Range</label>
                   <select 
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm"
+                    className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                     value={priceFilter}
                     onChange={(e) => setPriceFilter(e.target.value)}
                   >
@@ -134,16 +153,16 @@ export default function Home() {
                     <option>Above ₦200M</option>
                   </select>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-700">Bedrooms</label>
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Min Bedrooms</label>
                   <div className="flex gap-2">
                     {["Any", "1+", "2+", "3+", "4+"].map(b => (
                       <button 
                         key={b} 
                         onClick={() => setBedFilter(b)}
                         className={cn(
-                          "flex-1 h-10 rounded-lg border text-sm transition-colors",
-                          bedFilter === b ? "bg-blue-600 border-blue-600 text-white" : "border-slate-200 hover:border-blue-500 hover:text-blue-600"
+                          "flex-1 h-12 rounded-xl border text-sm font-bold transition-all",
+                          bedFilter === b ? "bg-blue-600 border-blue-600 text-white shadow-lg" : "border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-400 hover:text-blue-600"
                         )}
                       >
                         {b}
@@ -151,9 +170,9 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-700">Property Type</label>
-                  <select className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm">
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Property Type</label>
+                  <select className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20">
                     <option>All Types</option>
                     <option>Apartment</option>
                     <option>Duplex</option>
@@ -163,41 +182,23 @@ export default function Home() {
                 </div>
               </div>
             )}
-
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-center gap-4">
-              <div className="flex items-center justify-center bg-white/10 backdrop-blur-md p-1 rounded-xl border border-white/20 w-full md:w-auto">
-                {["Buy", "Rent", "Sell"].map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => setActiveType(type)}
-                    className="flex-1 md:flex-none px-6 md:px-8 py-2.5 rounded-lg text-sm font-semibold transition-all hover:bg-white/10 text-white data-[active=true]:bg-blue-600 data-[active=true]:text-white data-[active=true]:shadow-lg"
-                    data-active={activeType === type}
-                  >
-                    {type}
-                  </button>
-                ))}
-              </div>
-              <Button size="lg" className="h-[52px] w-full md:w-auto md:px-12 bg-blue-600 hover:bg-blue-700 font-bold text-lg shadow-xl shadow-blue-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] rounded-xl">
-                Search
-              </Button>
-            </div>
           </div>
         </div>
       </section>
 
       {/* Trust Stats Section: Reinforces platform reliability */}
-      <section className="bg-white border-b border-slate-100">
-        <div className="container mx-auto px-4 py-8">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+      <section className="bg-white border-b border-slate-100 overflow-hidden">
+        <div className="container mx-auto px-4 py-12">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-12">
             {[
               { label: "Verified Listings", value: "2,400+" },
               { label: "Identity Checks", value: "100%" },
               { label: "Fraud Rate", value: "0.0%" },
               { label: "Active Agents", value: "500+" },
             ].map((stat, i) => (
-              <div key={i} className="text-center md:text-left border-l-2 border-slate-100 pl-6 first:border-0 md:first:pl-0">
-                <p className="text-3xl font-display font-bold text-slate-900">{stat.value}</p>
-                <p className="text-sm text-slate-500 font-medium uppercase tracking-wider">{stat.label}</p>
+              <div key={i} className="text-center md:text-left border-l-2 border-slate-100 pl-10 first:border-0 md:first:pl-0">
+                <p className="text-4xl font-display font-bold text-slate-900 mb-1">{stat.value}</p>
+                <p className="text-xs text-slate-400 font-bold uppercase tracking-[0.2em]">{stat.label}</p>
               </div>
             ))}
           </div>
@@ -242,13 +243,16 @@ export default function Home() {
 
         {/* Professional Services Highlights */}
         <div className="mt-20">
-          <div className="flex flex-col md:flex-row items-center justify-between mb-10">
+          <div className="flex flex-col md:flex-row items-end justify-between mb-12">
             <div>
-              <h2 className="text-3xl font-display font-bold text-slate-900">Professional Services</h2>
-              <p className="text-slate-500 mt-2">Verified experts to assist with your real estate journey.</p>
+              <h2 className="text-4xl font-display font-bold text-slate-900 mb-3">Professional Services</h2>
+              <p className="text-slate-500 text-lg">Verified experts to assist with your real estate journey.</p>
             </div>
-            <Button asChild variant="ghost" className="text-blue-600 hidden md:flex items-center gap-2">
-              <Link href="/services">View All Services <ChevronRight className="w-4 h-4" /></Link>
+            <Button asChild variant="link" className="text-blue-600 font-bold text-lg p-0 hover:no-underline group">
+              <Link href="/services" className="flex items-center gap-2">
+                View All Services
+                <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+              </Link>
             </Button>
           </div>
 

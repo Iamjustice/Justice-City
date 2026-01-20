@@ -78,11 +78,29 @@ npm run db:push
 npm run dev
 ```
 
+## 🏗 Architecture & Core Logic
+
+### 🛡 The Trust Gate
+Justice City employs a "Trust Gate" architectural pattern. Access to core features (listing properties, requesting services, contacting sellers) is restricted to verified users.
+- **Unverified State:** Limited browsing and read-only access.
+- **Verified State:** Full access to marketplace transactions and professional services.
+
+### 👥 Role-Based Access Control (RBAC)
+The platform supports five distinct roles, each with specific permissions:
+- **Buyer:** Can browse, save, and purchase verified properties.
+- **Seller (Owner):** Can list properties after identity and title verification.
+- **Agent:** Verified professionals who can manage multiple listings and represent owners.
+- **Renter:** Focused on short-term or long-term lease opportunities.
+- **Admin:** Oversight of verification processes and marketplace integrity.
+
+### 💰 Commission Model
+Justice City operates on a **5% flat commission** model for successful transactions. This commission ensures the platform can continue to fund high-quality manual document verification and physical site inspections.
+
 ## 🛡 Verification Flow
 
 1. **User Registration:** Users sign up and select their primary role (Buyer, Agent, Owner).
-2. **Smile ID KYC:** Users are directed to the `/verify` page where the **Smile ID Secure Capture** component handles biometric identity capture.
-3. **Approval Logic:** Biometric data is processed via the Smile ID API. Successful verification grants the "Verified" badge and full platform access.
+2. **Smile ID KYC:** Users are directed to the `/verify` page where the **Smile ID SmartSelfie™** and **Document Verification** components handle biometric and ID capture.
+3. **Trust Validation:** Data is processed via Smile ID's biometric engine. Upon success, the `user.is_verified` flag is toggled in Supabase, triggering the "Verified" badge across the UI.
 
 ## 📄 License
 

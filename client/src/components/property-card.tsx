@@ -12,68 +12,80 @@ export function PropertyCard({ property }: { property: Property }) {
   return (
     <div className="group relative">
       <Link href={`/property/${property.id}`} className="block">
-        <div className="bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1">
+        <div className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-blue-900/5 transition-all duration-500 hover:-translate-y-2">
           {/* Image Container */}
-          <div className="relative h-64 overflow-hidden">
+          <div className="relative h-72 overflow-hidden">
             <img 
               src={property.image} 
               alt={property.title}
-              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
             />
-            <div className="absolute top-3 left-3 bg-white/90 backdrop-blur px-3 py-1 rounded-full text-xs font-bold text-slate-900 shadow-sm">
-              {property.type.toUpperCase()}
+
+            {/* Status Badge */}
+            <div className="absolute top-4 left-4 bg-white/95 backdrop-blur-md px-4 py-1.5 rounded-xl text-[10px] font-black tracking-widest text-slate-900 shadow-xl border border-white/20 uppercase">
+              {property.type}
             </div>
-            <div className="absolute top-3 right-3 bg-blue-600/90 backdrop-blur px-3 py-1 rounded-full text-xs font-bold text-white shadow-sm flex items-center gap-1">
-              <ShieldCheck className="w-3 h-3" />
+
+            {/* Verified Badge */}
+            <div className="absolute top-4 right-4 bg-blue-600 px-4 py-1.5 rounded-xl text-[10px] font-black tracking-widest text-white shadow-xl flex items-center gap-1.5 uppercase border border-blue-500/50">
+              <ShieldCheck className="w-3.5 h-3.5 fill-white/20" />
               Verified
             </div>
             
             {/* Price and Save Button Overlay */}
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4 pt-12 flex items-end justify-between">
-              <p className="text-white font-bold text-lg font-display">
-                {formatter.format(Number(property.price))}
-              </p>
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent p-6 pt-20 flex items-end justify-between">
+              <div>
+                <p className="text-blue-400 text-[10px] font-black tracking-[0.2em] uppercase mb-1">Price</p>
+                <p className="text-white font-bold text-2xl font-display tracking-tight">
+                  {formatter.format(Number(property.price))}
+                </p>
+              </div>
               <button 
                 data-testid={`button-save-${property.id}`}
-                className="bg-white/20 backdrop-blur-md p-2 rounded-full text-white hover:bg-white hover:text-red-500 transition-all duration-200 border border-white/30"
+                className="bg-white/10 backdrop-blur-xl p-3 rounded-2xl text-white hover:bg-white hover:text-red-500 transition-all duration-300 border border-white/20 group/heart"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  // Save logic would go here
                 }}
               >
-                <Heart className="w-4 h-4" />
+                <Heart className="w-5 h-5 group-hover/heart:fill-current" />
               </button>
             </div>
           </div>
 
           {/* Content */}
-          <div className="p-4 space-y-3">
+          <div className="p-6 space-y-4">
             <div>
-              <h3 className="font-semibold text-slate-900 line-clamp-1 group-hover:text-blue-600 transition-colors">
+              <h3 className="text-lg font-bold text-slate-900 line-clamp-1 group-hover:text-blue-600 transition-colors leading-tight">
                 {property.title}
               </h3>
-              <div className="flex items-center gap-1 text-slate-500 text-sm mt-1">
-                <MapPin className="w-3.5 h-3.5" />
+              <div className="flex items-center gap-1.5 text-slate-500 text-sm mt-2 font-medium">
+                <MapPin className="w-4 h-4 text-blue-500" />
                 <span className="truncate">{property.location}</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-4 py-2 border-t border-slate-100 text-slate-600 text-sm">
-              <div className="flex items-center gap-1.5">
-                <Bed className="w-4 h-4 text-slate-400" />
-                <span className="font-medium">{property.bedrooms}</span>
-                <span className="text-xs text-slate-400">Beds</span>
+            <div className="flex items-center justify-between pt-4 border-t border-slate-50 text-slate-600">
+              <div className="flex flex-col items-center gap-1">
+                <div className="flex items-center gap-1.5">
+                  <Bed className="w-4 h-4 text-slate-400" />
+                  <span className="font-bold text-slate-900">{property.bedrooms}</span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Beds</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Bath className="w-4 h-4 text-slate-400" />
-                <span className="font-medium">{property.bathrooms}</span>
-                <span className="text-xs text-slate-400">Baths</span>
+              <div className="flex flex-col items-center gap-1 border-x border-slate-50 px-6">
+                <div className="flex items-center gap-1.5">
+                  <Bath className="w-4 h-4 text-slate-400" />
+                  <span className="font-bold text-slate-900">{property.bathrooms}</span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Baths</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Expand className="w-4 h-4 text-slate-400" />
-                <span className="font-medium">{property.sqft}</span>
-                <span className="text-xs text-slate-400">sqft</span>
+              <div className="flex flex-col items-center gap-1">
+                <div className="flex items-center gap-1.5">
+                  <Expand className="w-4 h-4 text-slate-400" />
+                  <span className="font-bold text-slate-900">{property.sqft}</span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">sqft</span>
               </div>
             </div>
           </div>
