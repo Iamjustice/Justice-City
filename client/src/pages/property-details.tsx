@@ -113,9 +113,9 @@ export default function PropertyDetails() {
         console.error("Failed to start chat", error);
       }
     } else if (action === "call") {
-      setLocation("/request-callback");
+      setLocation(`/request-callback?propertyId=${property.id}`);
     } else if (action === "tour") {
-      setLocation("/schedule-tour");
+      setLocation(`/schedule-tour?propertyId=${property.id}`);
     }
   };
 

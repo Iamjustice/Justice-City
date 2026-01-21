@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Phone, Calendar, ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { useProperty, useStartConversation, useSendMessage } from "@/hooks/use-data";
 
 /**
  * RequestCallbackPage Component:
@@ -18,15 +19,43 @@ export default function RequestCallbackPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
+  const params = new URLSearchParams(window.location.search);
+  const propertyId = params.get("propertyId");
+
+  const { data: property, isLoading } = useProperty(propertyId || "");
+  const startConversation = useStartConversation();
+  const sendMessage = useSendMessage();
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user || !property) return;
+
     setIsSubmitting(true);
 
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    try {
+      const formData = new FormData(e.currentTarget as HTMLFormElement);
+      const phone = formData.get("phone");
+      const time = formData.get("time");
+      const notes = formData.get("notes");
 
-    setIsSubmitting(false);
-    setIsSuccess(true);
+      const convo = await startConversation.mutateAsync({
+        participant1Id: user.id,
+        participant2Id: property.agent.id,
+        propertyId: property.id,
+      });
+
+      await sendMessage.mutateAsync({
+        conversationId: convo.id,
+        senderId: user.id,
+        content: `🚨 CALLBACK REQUEST 🚨\nProperty: ${property.title}\nPhone: ${phone}\nPreferred Time: ${time}\nNotes: ${notes || "None"}`,
+      });
+
+      setIsSuccess(true);
+    } catch (error) {
+      console.error("Failed to submit callback request", error);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (!user) return <div className="p-20 text-center">Please log in to request a callback.</div>;
@@ -64,11 +93,11 @@ export default function RequestCallbackPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="phone">Phone Number</Label>
-              <Input id="phone" placeholder="+234 ..." required />
+              <Input id="phone" name="phone" placeholder="+234 ..." required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="time">Preferred Time</Label>
-              <select className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-blue-500">
+              <select name="time" className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-blue-500">
                 <option>Anytime</option>
                 <option>Morning (9 AM - 12 PM)</option>
                 <option>Afternoon (12 PM - 4 PM)</option>
@@ -77,7 +106,7 @@ export default function RequestCallbackPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="notes">Additional Notes (Optional)</Label>
-              <Textarea id="notes" placeholder="e.g. I'm interested in the 3-bedroom unit..." />
+              <Textarea id="notes" name="notes" placeholder="e.g. I'm interested in the 3-bedroom unit..." />
             </div>
           </CardContent>
           <CardFooter>
