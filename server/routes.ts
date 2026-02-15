@@ -3,7 +3,11 @@ import { type Server } from "http";
 import { randomUUID } from "crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { submitSmileIdVerification } from "./smile-id";
-import { saveVerification, updateVerificationByJobId } from "./verification-repository";
+import {
+  saveVerification,
+  setUserVerificationState,
+  updateVerificationByJobId,
+} from "./verification-repository";
 import {
   addFlaggedListingComment,
   getAdminDashboardData,
@@ -1172,6 +1176,10 @@ export async function registerRoutes(
         message: result.message,
       });
 
+      if (result.status === "approved") {
+        await setUserVerificationState(userId, true);
+      }
+
       return res.status(200).json(result);
     } catch (error) {
       const message =
@@ -1201,7 +1209,13 @@ export async function registerRoutes(
             ? "failed"
             : "pending";
 
-      await updateVerificationByJobId(jobId, mappedStatus, message);
+      const updatedVerification = await updateVerificationByJobId(jobId, mappedStatus, message);
+
+      if (mappedStatus === "approved") {
+        const userIdFromCallback = String(payload.user_id ?? payload.userId ?? "").trim();
+        const resolvedUserId = userIdFromCallback || updatedVerification?.userId || "";
+        await setUserVerificationState(resolvedUserId, true);
+      }
 
       return res.status(200).json({ ok: true });
     } catch (error) {

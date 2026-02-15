@@ -7,6 +7,7 @@ import {
   ShieldCheck, 
   ChevronRight, 
   Compass,
+  ClipboardCheck,
   Link as LinkIcon
 } from "lucide-react";
 import { Link } from "wouter";
@@ -55,7 +56,7 @@ export default function Home() {
             alt="City Skyline" 
             className="w-full h-full object-cover opacity-50"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-transparent"></div>
+          <div className="absolute inset-0 bg-linear-to-t from-slate-900 via-transparent to-transparent"></div>
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
@@ -66,7 +67,7 @@ export default function Home() {
           </div>
           <h1 className="text-4xl md:text-6xl font-display font-bold text-white mb-6 leading-tight">
             Find Your Home. <br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-green-400">
+            <span className="text-transparent bg-clip-text bg-linear-to-r from-blue-400 to-green-400">
               Verify The Truth.
             </span>
           </h1>
@@ -102,8 +103,11 @@ export default function Home() {
             {showFilters && (
               <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-top-4 duration-300">
                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-700">Price Range</label>
+                  <label htmlFor="home-price-range" className="text-sm font-semibold text-slate-700">Price Range</label>
                   <select 
+                    id="home-price-range"
+                    title="Price Range"
+                    aria-label="Price Range"
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm"
                     value={priceFilter}
                     onChange={(e) => setPriceFilter(e.target.value)}
@@ -133,8 +137,13 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-700">Property Type</label>
-                  <select className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm">
+                  <label htmlFor="home-property-type" className="text-sm font-semibold text-slate-700">Property Type</label>
+                  <select
+                    id="home-property-type"
+                    title="Property Type"
+                    aria-label="Property Type"
+                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm"
+                  >
                     <option>All Types</option>
                     <option>Apartment</option>
                     <option>Duplex</option>
@@ -237,7 +246,7 @@ export default function Home() {
               { 
                 title: "Property Valuation", 
                 desc: "Professional appraisal services to determine the true market value of any asset.",
-                icon: <Compass className="w-6 h-6" />,
+                icon: <ClipboardCheck className="w-6 h-6" />,
                 color: "bg-green-50 text-green-600"
               },
               { 

@@ -422,6 +422,9 @@ export default function Dashboard() {
               <div className="space-y-2">
                 <Label htmlFor="type">Listing Type</Label>
                 <select
+                  id="type"
+                  title="Listing Type"
+                  aria-label="Listing Type"
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm"
                   value={createListingForm.type}
                   onChange={(event) =>
@@ -1571,7 +1574,7 @@ function AgentDashboardView({ listings, leads, handleCreateListing, setIsVerific
                   <TableRow key={listing.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-slate-100 rounded-lg flex-shrink-0"></div>
+                        <div className="w-10 h-10 bg-slate-100 rounded-lg shrink-0"></div>
                         <div>
                           <p className="text-slate-900 font-semibold">{listing.title}</p>
                           <p className="text-xs text-slate-500">ID: {listing.id.toUpperCase()}</p>
@@ -1679,7 +1682,7 @@ function AgentDashboardView({ listings, leads, handleCreateListing, setIsVerific
             <CardContent>
               <div className="space-y-6">
                 <div className="flex items-center gap-4 p-4 border border-slate-100 rounded-xl bg-slate-50/50">
-                  <div className="w-16 h-16 bg-slate-200 rounded-lg flex-shrink-0"></div>
+                  <div className="w-16 h-16 bg-slate-200 rounded-lg shrink-0"></div>
                   <div className="flex-1">
                     <h4 className="font-bold text-slate-900">Unfinished Bungalow in Epe</h4>
                     <div className="flex items-center gap-2 mt-1">

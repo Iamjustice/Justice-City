@@ -41,8 +41,8 @@ function getModePath(mode: SmileIdVerificationPayload["mode"]): string {
 export async function submitSmileIdVerification(
   payload: SmileIdVerificationPayload,
 ): Promise<SmileIdVerificationResult> {
-  const partnerId = requiredEnv("8207");
-  const apiKey = requiredEnv("4f58c7a0-c4df-473a-afbb-d0c84406d093");
+  const partnerId = requiredEnv("SMILE_ID_PARTNER_ID");
+  const apiKey = requiredEnv("SMILE_ID_API_KEY");
 
   if (!partnerId || !apiKey) {
     if (isProduction()) {
