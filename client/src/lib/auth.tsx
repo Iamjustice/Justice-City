@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { submitVerification } from "@/lib/verification";
+import { fetchVerificationStatus, submitVerification } from "@/lib/verification";
 
 type UserRole = "buyer" | "seller" | "agent" | "owner" | "renter" | "admin" | null;
 
@@ -23,15 +23,61 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const USER_STORAGE_KEY = "justice_city_user";
+const VERIFICATION_POLL_INTERVAL_MS = 8000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(() => {
-    // Initialize from localStorage for persistence in mockup mode
-    const saved = localStorage.getItem("justice_city_user");
+    const saved = localStorage.getItem(USER_STORAGE_KEY);
     return saved ? JSON.parse(saved) : null;
   });
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+
+  const persistUser = useCallback((nextUser: User | null) => {
+    if (nextUser) {
+      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
+    } else {
+      localStorage.removeItem(USER_STORAGE_KEY);
+    }
+    setUser(nextUser);
+  }, []);
+
+  const refreshVerificationStatus = useCallback(
+    async (targetUser: User): Promise<boolean> => {
+      try {
+        const snapshot = await fetchVerificationStatus(targetUser.id);
+        const resolvedIsVerified = Boolean(snapshot.isVerified) || targetUser.role === "admin";
+
+        setUser((current) => {
+          if (!current || current.id !== targetUser.id) return current;
+          if (current.isVerified === resolvedIsVerified) return current;
+          const updated = { ...current, isVerified: resolvedIsVerified };
+          localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(updated));
+          return updated;
+        });
+
+        return resolvedIsVerified;
+      } catch {
+        return Boolean(targetUser.isVerified);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!user?.id) return;
+    void refreshVerificationStatus(user);
+  }, [user?.id, refreshVerificationStatus]);
+
+  useEffect(() => {
+    if (!user?.id || user.isVerified) return;
+    const timer = window.setInterval(() => {
+      void refreshVerificationStatus(user);
+    }, VERIFICATION_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [user?.id, user?.isVerified, refreshVerificationStatus, user]);
 
   const login = (role: UserRole = "buyer") => {
     setIsLoading(true);
@@ -58,23 +104,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       name: nameByRole[resolvedRole],
       email: `${resolvedRole}@example.com`,
       role: resolvedRole,
-      isVerified: resolvedRole === "admin", // Admins are verified by default in mockup
+      isVerified: resolvedRole === "admin",
       avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${resolvedRole}`,
     };
-    
-    // Store in localStorage for persistence in mockup mode
-    localStorage.setItem("justice_city_user", JSON.stringify(userData));
-    setUser(userData);
+
+    persistUser(userData);
     setIsLoading(false);
+    void refreshVerificationStatus(userData);
+
     toast({
       title: "Welcome back",
-      description: "You are currently logged in as an Unverified User.",
+      description:
+        resolvedRole === "admin"
+          ? "Admin session is active."
+          : "Session started. Verification status will sync from backend.",
     });
   };
 
   const logout = () => {
-    localStorage.removeItem("justice_city_user");
-    setUser(null);
+    persistUser(null);
     toast({
       title: "Logged out",
     });
@@ -94,16 +142,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         lastName: user.name.split(" ").slice(1).join(" ") || "User",
       });
 
-      const isApproved = verification.status === "approved";
-      const updatedUser = { ...user, isVerified: isApproved };
-      localStorage.setItem("justice_city_user", JSON.stringify(updatedUser));
-      setUser(updatedUser);
+      let isApproved = verification.status === "approved";
+      if (isApproved) {
+        const updatedUser = { ...user, isVerified: true };
+        persistUser(updatedUser);
+      } else {
+        isApproved = await refreshVerificationStatus(user);
+      }
 
       toast({
         title: isApproved ? "Identity Verified" : "Identity Verification Submitted",
         description: isApproved
           ? "You now have full access to Justice City."
-          : "Your Smile ID check is pending review. We will notify you once it is approved.",
+          : "Your Smile ID check is pending. We are polling backend status and will unlock access once approved.",
         variant: "default",
         className: isApproved ? "bg-green-600 text-white border-none" : undefined,
       });
@@ -152,8 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const updatedUser = { ...user, avatar: dataUrl };
-    localStorage.setItem("justice_city_user", JSON.stringify(updatedUser));
-    setUser(updatedUser);
+    persistUser(updatedUser);
 
     toast({
       title: "Profile photo updated",

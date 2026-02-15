@@ -1,9 +1,10 @@
 import type { Express, Request, Response } from "express";
 import { type Server } from "http";
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { submitSmileIdVerification } from "./smile-id";
 import {
+  getUserVerificationSnapshot,
   saveVerification,
   setUserVerificationState,
   updateVerificationByJobId,
@@ -122,6 +123,63 @@ function isMissingTableOrColumnError(error: unknown): boolean {
     (message.includes("relation") && message.includes("does not exist")) ||
     (message.includes("column") && message.includes("does not exist"))
   );
+}
+
+function getRequestRawBody(req: Request): Buffer {
+  const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
+  if (Buffer.isBuffer(rawBody)) return rawBody;
+  if (typeof rawBody === "string") return Buffer.from(rawBody);
+  return Buffer.from(JSON.stringify(req.body ?? {}));
+}
+
+function normalizeSignature(
+  value: string,
+  configuredPrefix: string,
+): string {
+  let signature = String(value ?? "").trim();
+  if (!signature) return "";
+
+  if (configuredPrefix) {
+    const lowerSignature = signature.toLowerCase();
+    const lowerPrefix = configuredPrefix.toLowerCase();
+    if (lowerSignature.startsWith(lowerPrefix)) {
+      signature = signature.slice(configuredPrefix.length);
+    }
+  }
+
+  // Common callback signature format prefix.
+  if (signature.toLowerCase().startsWith("sha256=")) {
+    signature = signature.slice("sha256=".length);
+  }
+
+  return signature.trim().toLowerCase();
+}
+
+function verifySmileCallbackSignature(req: Request): boolean {
+  const secret = String(process.env.SMILE_ID_CALLBACK_SECRET ?? "").trim();
+  if (!secret) return true;
+
+  const headerName = String(
+    process.env.SMILE_ID_CALLBACK_SIGNATURE_HEADER ?? "x-smile-signature",
+  )
+    .trim()
+    .toLowerCase();
+  const configuredPrefix = String(process.env.SMILE_ID_CALLBACK_SIGNATURE_PREFIX ?? "").trim();
+
+  const headerValue = req.headers[headerName];
+  const rawSignature = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (typeof rawSignature !== "string" || !rawSignature.trim()) return false;
+
+  const providedHex = normalizeSignature(rawSignature, configuredPrefix);
+  if (!/^[a-f0-9]+$/i.test(providedHex)) return false;
+
+  const expectedHex = createHmac("sha256", secret).update(getRequestRawBody(req)).digest("hex");
+
+  const providedBuffer = Buffer.from(providedHex, "hex");
+  const expectedBuffer = Buffer.from(expectedHex, "hex");
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+
+  return timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
 export async function registerRoutes(
@@ -1189,8 +1247,49 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/verification/status/:userId", async (req: Request, res: Response) => {
+    try {
+      const userId = String(req.params?.userId ?? "").trim();
+      if (!userId) {
+        return res.status(400).json({ message: "userId is required" });
+      }
+
+      const snapshot = await getUserVerificationSnapshot(userId);
+      if (!snapshot) {
+        return res.status(200).json({
+          userId,
+          isVerified: false,
+          latestStatus: null,
+          latestJobId: null,
+          latestSmileJobId: null,
+          latestProvider: null,
+          latestMessage: null,
+          latestUpdatedAt: null,
+          userRowFound: false,
+        });
+      }
+
+      // Keep users.is_verified aligned when verification row is approved.
+      if (snapshot.isVerified && !snapshot.userRowFound) {
+        // No-op when user row does not exist in this environment.
+      } else if (snapshot.isVerified) {
+        await setUserVerificationState(userId, true);
+      }
+
+      return res.status(200).json(snapshot);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to load verification status";
+      return res.status(502).json({ message });
+    }
+  });
+
   app.post("/api/verification/smile-id/callback", async (req: Request, res: Response) => {
     try {
+      if (!verifySmileCallbackSignature(req)) {
+        return res.status(401).json({ message: "Invalid callback signature" });
+      }
+
       const payload = (req.body ?? {}) as Record<string, unknown>;
 
       const jobId = String(payload.job_id ?? payload.jobId ?? "");
@@ -1210,14 +1309,22 @@ export async function registerRoutes(
             : "pending";
 
       const updatedVerification = await updateVerificationByJobId(jobId, mappedStatus, message);
+      if (!updatedVerification) {
+        return res.status(404).json({ message: "Verification job not found" });
+      }
 
-      if (mappedStatus === "approved") {
+      if (updatedVerification.status === "approved") {
         const userIdFromCallback = String(payload.user_id ?? payload.userId ?? "").trim();
         const resolvedUserId = userIdFromCallback || updatedVerification?.userId || "";
         await setUserVerificationState(resolvedUserId, true);
       }
 
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({
+        ok: true,
+        idempotent: !updatedVerification.changed,
+        status: updatedVerification.status,
+        previousStatus: updatedVerification.previousStatus,
+      });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Callback processing failed";
