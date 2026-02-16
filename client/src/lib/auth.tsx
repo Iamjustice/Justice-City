@@ -1,6 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { fetchVerificationStatus, submitVerification } from "@/lib/verification";
+import { apiRequest } from "@/lib/queryClient";
+import { getSupabaseClient } from "@/lib/supabase";
 
 type UserRole = "buyer" | "seller" | "agent" | "owner" | "renter" | "admin" | null;
 
@@ -13,126 +15,269 @@ interface User {
   avatar?: string;
 }
 
+interface SignInPayload {
+  email: string;
+  password: string;
+}
+
+interface SignUpPayload extends SignInPayload {
+  name: string;
+  role: Exclude<UserRole, null>;
+}
+
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (role?: UserRole) => void;
-  logout: () => void;
+  signIn: (payload: SignInPayload) => Promise<void>;
+  signUp: (payload: SignUpPayload) => Promise<boolean>;
+  logout: () => Promise<void>;
   verifyIdentity: () => Promise<boolean>;
   updateProfileAvatar: (file: File) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const USER_STORAGE_KEY = "justice_city_user";
 const VERIFICATION_POLL_INTERVAL_MS = 8000;
 
+function normalizeRole(rawRole: unknown): Exclude<UserRole, null> {
+  const role = String(rawRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (role === "buyer" || role === "seller" || role === "agent" || role === "admin") {
+    return role;
+  }
+  if (role === "owner" || role === "renter") return role;
+  return "buyer";
+}
+
+function toAppUser(payload: {
+  id: string;
+  name?: string;
+  email?: string;
+  role?: string;
+  isVerified?: boolean;
+  avatar?: string;
+}): User {
+  const email = String(payload.email ?? "").trim();
+  const resolvedName =
+    String(payload.name ?? "").trim() ||
+    email.split("@")[0] ||
+    "User";
+
+  return {
+    id: String(payload.id ?? ""),
+    name: resolvedName,
+    email,
+    role: normalizeRole(payload.role ?? "buyer"),
+    isVerified: Boolean(payload.isVerified),
+    avatar: String(payload.avatar ?? "").trim() || undefined,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem(USER_STORAGE_KEY);
-    return saved ? JSON.parse(saved) : null;
-  });
-  const [isLoading, setIsLoading] = useState(false);
+  const supabase = useMemo(() => getSupabaseClient(), []);
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const { toast } = useToast();
 
-  const persistUser = useCallback((nextUser: User | null) => {
-    if (nextUser) {
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
-    } else {
-      localStorage.removeItem(USER_STORAGE_KEY);
-    }
-    setUser(nextUser);
-  }, []);
+  const getAccessToken = useCallback(async (): Promise<string> => {
+    if (!supabase) return "";
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return "";
+    return String(data.session?.access_token ?? "").trim();
+  }, [supabase]);
 
-  const refreshVerificationStatus = useCallback(
-    async (targetUser: User): Promise<boolean> => {
-      try {
-        const snapshot = await fetchVerificationStatus(targetUser.id);
-        const resolvedIsVerified = Boolean(snapshot.isVerified) || targetUser.role === "admin";
-
-        setUser((current) => {
-          if (!current || current.id !== targetUser.id) return current;
-          if (current.isVerified === resolvedIsVerified) return current;
-          const updated = { ...current, isVerified: resolvedIsVerified };
-          localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(updated));
-          return updated;
-        });
-
-        return resolvedIsVerified;
-      } catch {
-        return Boolean(targetUser.isVerified);
-      }
+  const fetchAuthProfile = useCallback(
+    async (accessToken: string): Promise<User> => {
+      const response = await apiRequest("GET", "/api/auth/me", undefined, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const payload = (await response.json()) as {
+        id: string;
+        name?: string;
+        email?: string;
+        role?: string;
+        isVerified?: boolean;
+        avatar?: string;
+      };
+      return toAppUser(payload);
     },
     [],
   );
 
+  const syncSessionUser = useCallback(async (): Promise<void> => {
+    if (!supabase) {
+      setUser(null);
+      setIsLoading(false);
+      return;
+    }
+
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session?.access_token) {
+      setUser(null);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const profile = await fetchAuthProfile(data.session.access_token);
+      setUser(profile);
+    } catch {
+      setUser(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fetchAuthProfile, supabase]);
+
   useEffect(() => {
-    if (!user?.id) return;
-    void refreshVerificationStatus(user);
-  }, [user?.id, refreshVerificationStatus]);
+    let active = true;
+    void syncSessionUser();
+
+    if (!supabase) return () => undefined;
+
+    const { data: subscription } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!active) return;
+
+      if (!session?.access_token) {
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const profile = await fetchAuthProfile(session.access_token);
+        if (!active) return;
+        setUser(profile);
+      } catch {
+        if (!active) return;
+        setUser(null);
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.subscription.unsubscribe();
+    };
+  }, [fetchAuthProfile, supabase, syncSessionUser]);
+
+  const refreshVerificationStatus = useCallback(async (): Promise<boolean> => {
+    if (!user?.id) return false;
+
+    try {
+      const snapshot = await fetchVerificationStatus(user.id);
+      const resolved = Boolean(snapshot.isVerified);
+      setUser((current) => {
+        if (!current || current.id !== user.id) return current;
+        if (current.isVerified === resolved) return current;
+        return { ...current, isVerified: resolved };
+      });
+      return resolved;
+    } catch {
+      return Boolean(user.isVerified);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!user?.id || user.isVerified) return;
     const timer = window.setInterval(() => {
-      void refreshVerificationStatus(user);
+      void refreshVerificationStatus();
     }, VERIFICATION_POLL_INTERVAL_MS);
-
     return () => window.clearInterval(timer);
-  }, [user?.id, user?.isVerified, refreshVerificationStatus, user]);
+  }, [refreshVerificationStatus, user?.id, user?.isVerified]);
 
-  const login = (role: UserRole = "buyer") => {
-    setIsLoading(true);
-    const resolvedRole = role ?? "buyer";
-    const idByRole: Record<Exclude<UserRole, null>, string> = {
-      buyer: "usr_buyer_001",
-      seller: "usr_seller_001",
-      agent: "usr_agent_001",
-      owner: "usr_owner_001",
-      renter: "usr_renter_001",
-      admin: "usr_admin_001",
-    };
-    const nameByRole: Record<Exclude<UserRole, null>, string> = {
-      buyer: "Alex Doe",
-      seller: "Seller Stella",
-      agent: "Agent Alex",
-      owner: "Owner Olivia",
-      renter: "Renter Ryan",
-      admin: "Justice Admin",
-    };
-
-    const userData = {
-      id: idByRole[resolvedRole],
-      name: nameByRole[resolvedRole],
-      email: `${resolvedRole}@example.com`,
-      role: resolvedRole,
-      isVerified: resolvedRole === "admin",
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${resolvedRole}`,
-    };
-
-    persistUser(userData);
-    setIsLoading(false);
-    void refreshVerificationStatus(userData);
-
-    toast({
-      title: "Welcome back",
-      description:
-        resolvedRole === "admin"
-          ? "Admin session is active."
-          : "Session started. Verification status will sync from backend.",
-    });
+  const login = (_role?: UserRole) => {
+    window.location.assign("/auth?mode=login");
   };
 
-  const logout = () => {
-    persistUser(null);
-    toast({
-      title: "Logged out",
-    });
+  const signIn = async (payload: SignInPayload): Promise<void> => {
+    if (!supabase) {
+      throw new Error(
+        "Supabase auth is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.",
+      );
+    }
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: payload.email.trim(),
+        password: payload.password,
+      });
+
+      if (error) throw error;
+      const accessToken = String(data.session?.access_token ?? "").trim();
+      if (!accessToken) {
+        throw new Error("Session token was not returned.");
+      }
+
+      const profile = await fetchAuthProfile(accessToken);
+      setUser(profile);
+      toast({
+        title: "Welcome back",
+        description: "You are now signed in.",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const signUp = async (payload: SignUpPayload): Promise<boolean> => {
+    if (!supabase) {
+      throw new Error(
+        "Supabase auth is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.",
+      );
+    }
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: payload.email.trim(),
+        password: payload.password,
+        options: {
+          data: {
+            full_name: payload.name.trim(),
+            role: normalizeRole(payload.role),
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      const accessToken = String(data.session?.access_token ?? "").trim();
+      if (!accessToken) {
+        toast({
+          title: "Check your inbox",
+          description:
+            "Your account was created. Complete email confirmation, then log in to continue.",
+        });
+        return false;
+      }
+
+      const profile = await fetchAuthProfile(accessToken);
+      setUser(profile);
+      toast({
+        title: "Account created",
+        description: "Your account is ready. Complete identity verification to unlock all actions.",
+      });
+      return true;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const logout = async (): Promise<void> => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setUser(null);
+    toast({ title: "Logged out" });
   };
 
   const verifyIdentity = async (): Promise<boolean> => {
     if (!user) return false;
 
     setIsLoading(true);
-
     try {
       const verification = await submitVerification({
         mode: "biometric",
@@ -143,26 +288,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       let isApproved = verification.status === "approved";
-      if (isApproved) {
-        const updatedUser = { ...user, isVerified: true };
-        persistUser(updatedUser);
+      if (!isApproved) {
+        isApproved = await refreshVerificationStatus();
       } else {
-        isApproved = await refreshVerificationStatus(user);
+        setUser((current) => (current ? { ...current, isVerified: true } : current));
       }
 
       toast({
         title: isApproved ? "Identity Verified" : "Identity Verification Submitted",
         description: isApproved
           ? "You now have full access to Justice City."
-          : "Your Smile ID check is pending. We are polling backend status and will unlock access once approved.",
-        variant: "default",
+          : "Verification is pending review. Status will update automatically.",
         className: isApproved ? "bg-green-600 text-white border-none" : undefined,
       });
 
       return isApproved;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Verification failed.";
-
       toast({
         title: "Verification Failed",
         description: message,
@@ -172,21 +314,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-
-    return false;
   };
 
   const updateProfileAvatar = async (file: File): Promise<void> => {
     if (!user) {
       throw new Error("You must be logged in to update your profile photo.");
     }
-
     if (!file.type.toLowerCase().startsWith("image/")) {
       throw new Error("Please upload a valid image file (JPG, PNG, or WEBP).");
     }
-
     if (file.size > 5 * 1024 * 1024) {
       throw new Error("Profile photo must be 5MB or smaller.");
+    }
+
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+      throw new Error("Missing auth session. Please sign in again.");
     }
 
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -202,8 +345,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       reader.readAsDataURL(file);
     });
 
-    const updatedUser = { ...user, avatar: dataUrl };
-    persistUser(updatedUser);
+    const response = await apiRequest(
+      "PATCH",
+      "/api/auth/profile",
+      { avatarUrl: dataUrl },
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    const payload = (await response.json()) as {
+      id: string;
+      name?: string;
+      email?: string;
+      role?: string;
+      isVerified?: boolean;
+      avatar?: string;
+    };
+    setUser(toAppUser(payload));
 
     toast({
       title: "Profile photo updated",
@@ -213,7 +369,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, login, logout, verifyIdentity, updateProfileAvatar }}
+      value={{
+        user,
+        isLoading,
+        login,
+        signIn,
+        signUp,
+        logout,
+        verifyIdentity,
+        updateProfileAvatar,
+      }}
     >
       {children}
     </AuthContext.Provider>

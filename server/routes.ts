@@ -48,6 +48,7 @@ const SERVICE_REQUESTS_TABLE =
   process.env.SUPABASE_SERVICE_REQUESTS_TABLE || "service_request_records";
 const CONVERSATION_TRANSCRIPTS_TABLE =
   process.env.SUPABASE_CONVERSATION_TRANSCRIPTS_TABLE || "conversation_transcripts";
+const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
 
 function createSupabaseServiceClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
@@ -125,6 +126,141 @@ function isMissingTableOrColumnError(error: unknown): boolean {
   );
 }
 
+function getBearerToken(req: Request): string {
+  const header = String(req.headers.authorization ?? "").trim();
+  if (!header.toLowerCase().startsWith("bearer ")) return "";
+  return header.slice(7).trim();
+}
+
+type AppUserRole = "buyer" | "seller" | "agent" | "admin" | "owner" | "renter";
+
+function normalizeUserRole(rawRole: unknown): AppUserRole {
+  const role = String(rawRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (role === "buyer" || role === "seller" || role === "agent" || role === "admin") {
+    return role;
+  }
+  if (role === "owner" || role === "renter") return role;
+  return "buyer";
+}
+
+function buildFallbackUsername(email: string | null | undefined, userId: string): string {
+  const prefix = String(email ?? "")
+    .split("@")[0]
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const safePrefix = prefix || "user";
+  return `${safePrefix}_${String(userId).slice(0, 8)}`;
+}
+
+async function ensurePublicUserRow(
+  client: SupabaseClient,
+  authUser: {
+    id: string;
+    email?: string | null;
+    user_metadata?: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  const userId = String(authUser.id ?? "").trim();
+  if (!userId) return;
+
+  const { data: existing, error: existingError } = await client
+    .from(USERS_TABLE)
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle<{ id: string }>();
+
+  if (existingError && !isMissingTableOrColumnError(existingError)) {
+    throw existingError;
+  }
+  if (existing) return;
+  if (existingError && isMissingTableOrColumnError(existingError)) return;
+
+  const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+  const fullName =
+    String(metadata.full_name ?? metadata.name ?? "").trim() || String(authUser.email ?? "");
+  const role = normalizeUserRole(metadata.role);
+  const avatarUrl = String(metadata.avatar_url ?? metadata.picture ?? "").trim() || null;
+
+  const insertPayload: Record<string, unknown> = {
+    id: userId,
+    username: buildFallbackUsername(authUser.email, userId),
+    password: "supabase_auth_managed",
+    full_name: fullName || null,
+    email: authUser.email ?? null,
+    role,
+    status: "active",
+    is_verified: false,
+    avatar_url: avatarUrl,
+  };
+
+  const { error: insertError } = await client.from(USERS_TABLE).insert(insertPayload);
+  if (insertError && !isMissingTableOrColumnError(insertError)) {
+    throw insertError;
+  }
+}
+
+async function buildAuthProfileFromToken(
+  client: SupabaseClient,
+  token: string,
+): Promise<{
+  id: string;
+  name: string;
+  email: string;
+  role: AppUserRole;
+  isVerified: boolean;
+  avatar?: string;
+} | null> {
+  const { data: authData, error: authError } = await client.auth.getUser(token);
+  if (authError || !authData?.user) return null;
+
+  const authUser = authData.user;
+  await ensurePublicUserRow(client, {
+    id: authUser.id,
+    email: authUser.email ?? null,
+    user_metadata: (authUser.user_metadata ?? null) as Record<string, unknown> | null,
+  });
+
+  const { data: userRow, error: userError } = await client
+    .from(USERS_TABLE)
+    .select("id, full_name, email, role, is_verified, avatar_url")
+    .eq("id", authUser.id)
+    .maybeSingle<{
+      id: string;
+      full_name?: string | null;
+      email?: string | null;
+      role?: string | null;
+      is_verified?: boolean | null;
+      avatar_url?: string | null;
+    }>();
+
+  if (userError && !isMissingTableOrColumnError(userError)) {
+    throw userError;
+  }
+
+  const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+  const email = String(userRow?.email ?? authUser.email ?? "").trim();
+  const role = normalizeUserRole(userRow?.role ?? metadata.role);
+  const name =
+    String(userRow?.full_name ?? metadata.full_name ?? metadata.name ?? "").trim() ||
+    email.split("@")[0] ||
+    "User";
+  const avatar =
+    String(userRow?.avatar_url ?? metadata.avatar_url ?? metadata.picture ?? "").trim() || undefined;
+
+  return {
+    id: String(authUser.id),
+    name,
+    email,
+    role,
+    isVerified: Boolean(userRow?.is_verified),
+    avatar,
+  };
+}
+
 function getRequestRawBody(req: Request): Buffer {
   const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
   if (Buffer.isBuffer(rawBody)) return rawBody;
@@ -186,6 +322,88 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  app.get("/api/auth/me", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const token = getBearerToken(req);
+      if (!token) {
+        return res.status(401).json({ message: "Missing bearer token." });
+      }
+
+      const profile = await buildAuthProfileFromToken(client, token);
+      if (!profile) {
+        return res.status(401).json({ message: "Invalid or expired session." });
+      }
+
+      return res.status(200).json(profile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load auth profile";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.patch("/api/auth/profile", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const token = getBearerToken(req);
+      if (!token) {
+        return res.status(401).json({ message: "Missing bearer token." });
+      }
+
+      const { data: authData, error: authError } = await client.auth.getUser(token);
+      if (authError || !authData?.user) {
+        return res.status(401).json({ message: "Invalid or expired session." });
+      }
+
+      const authUser = authData.user;
+      await ensurePublicUserRow(client, {
+        id: authUser.id,
+        email: authUser.email ?? null,
+        user_metadata: (authUser.user_metadata ?? null) as Record<string, unknown> | null,
+      });
+
+      const fullNameRaw = (req.body as Record<string, unknown> | undefined)?.fullName;
+      const avatarUrlRaw = (req.body as Record<string, unknown> | undefined)?.avatarUrl;
+      const updates: Record<string, unknown> = {};
+
+      if (typeof fullNameRaw === "string") {
+        const fullName = fullNameRaw.trim();
+        updates.full_name = fullName.length > 0 ? fullName : null;
+      }
+      if (typeof avatarUrlRaw === "string") {
+        const avatarUrl = avatarUrlRaw.trim();
+        updates.avatar_url = avatarUrl.length > 0 ? avatarUrl : null;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        const { error: updateError } = await client
+          .from(USERS_TABLE)
+          .update(updates)
+          .eq("id", authUser.id);
+        if (updateError && !isMissingTableOrColumnError(updateError)) {
+          throw updateError;
+        }
+      }
+
+      const profile = await buildAuthProfileFromToken(client, token);
+      if (!profile) {
+        return res.status(401).json({ message: "Invalid or expired session." });
+      }
+      return res.status(200).json(profile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update profile";
+      return res.status(502).json({ message });
+    }
+  });
+
   app.get("/api/agent/listings", async (req: Request, res: Response) => {
     try {
       const actorId = String(req.query?.actorId ?? "").trim();
