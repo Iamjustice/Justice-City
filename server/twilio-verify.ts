@@ -20,6 +20,7 @@ type TwilioVerifyConfig = {
   authToken: string;
   serviceSid: string;
   baseUrl: string;
+  customFriendlyName?: string;
 };
 
 function readEnv(name: string): string {
@@ -62,12 +63,14 @@ function getTwilioVerifyConfig(): TwilioVerifyConfig {
   const serviceSid = requiredTwilioEnv("VERIFY_SERVICE_SID");
   const baseUrl =
     resolveTwilioEnv("VERIFY_BASE_URL") || "https://verify.twilio.com/v2";
+  const customFriendlyName = resolveTwilioEnv("VERIFY_CUSTOM_FRIENDLY_NAME");
 
   return {
     accountSid,
     authToken,
     serviceSid,
     baseUrl: normalizeBaseUrl(baseUrl),
+    customFriendlyName: customFriendlyName || undefined,
   };
 }
 
@@ -88,6 +91,13 @@ function buildAuthHeader(accountSid: string, authToken: string): string {
 
 export async function sendPhoneVerificationCode(phone: string): Promise<TwilioSendCodeResult> {
   const config = getTwilioVerifyConfig();
+  const form = new URLSearchParams({
+    To: phone,
+    Channel: "sms",
+  });
+  if (config.customFriendlyName) {
+    form.set("CustomFriendlyName", config.customFriendlyName);
+  }
 
   const response = await fetch(`${config.baseUrl}/Services/${config.serviceSid}/Verifications`, {
     method: "POST",
@@ -95,10 +105,7 @@ export async function sendPhoneVerificationCode(phone: string): Promise<TwilioSe
       Authorization: buildAuthHeader(config.accountSid, config.authToken),
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({
-      To: phone,
-      Channel: "sms",
-    }),
+    body: form,
   });
 
   if (!response.ok) {
