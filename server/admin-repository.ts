@@ -105,11 +105,14 @@ const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
 const VERIFICATIONS_TABLE = process.env.SUPABASE_VERIFICATIONS_TABLE || "verifications";
 const VERIFICATION_DOCUMENTS_TABLE =
   process.env.SUPABASE_VERIFICATION_DOCUMENTS_TABLE || "verification_documents";
+const VERIFICATION_DOCUMENTS_BUCKET =
+  process.env.SUPABASE_VERIFICATION_DOCUMENTS_BUCKET || "verification-documents";
 const FLAGGED_LISTINGS_TABLE = process.env.SUPABASE_FLAGGED_LISTINGS_TABLE || "flagged_listings";
 const FLAGGED_LISTING_COMMENTS_TABLE =
   process.env.SUPABASE_FLAGGED_LISTING_COMMENTS_TABLE || "flagged_listing_comments";
 const ADMIN_CHAT_CARDS_TABLE = process.env.SUPABASE_ADMIN_CHAT_CARDS_TABLE || "admin_chat_cards";
 const REVENUE_RECORDS_TABLE = process.env.SUPABASE_REVENUE_RECORDS_TABLE || "revenue_records";
+const VERIFICATION_DOCUMENT_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 const DEFAULT_IDENTITY_DOC_URL = "/sample-identity.txt";
 const DEFAULT_UTILITY_DOC_URL = "/sample-utility-bill.txt";
@@ -431,13 +434,29 @@ async function fetchVerificationDocuments(
     const verificationId = String(row.verification_id ?? "");
     if (!verificationId) continue;
 
+    const bucketId = String(row.bucket_id ?? VERIFICATION_DOCUMENTS_BUCKET).trim() || VERIFICATION_DOCUMENTS_BUCKET;
+    const storagePath = String(row.storage_path ?? "").trim();
+    let resolvedUrl =
+      typeof row.document_url === "string" && row.document_url.trim()
+        ? row.document_url
+        : DEFAULT_IDENTITY_DOC_URL;
+
+    if (storagePath) {
+      const { data: signedData, error: signedError } = await client.storage
+        .from(bucketId)
+        .createSignedUrl(storagePath, VERIFICATION_DOCUMENT_SIGNED_URL_TTL_SECONDS);
+
+      if (!signedError && signedData?.signedUrl) {
+        resolvedUrl = String(signedData.signedUrl);
+      } else {
+        resolvedUrl = storagePath;
+      }
+    }
+
     const currentDocs = docsByVerificationId.get(verificationId) ?? [];
     currentDocs.push({
       name: String(row.document_type ?? "Identity"),
-      url:
-        typeof row.document_url === "string" && row.document_url.trim()
-          ? row.document_url
-          : DEFAULT_IDENTITY_DOC_URL,
+      url: resolvedUrl,
     });
     docsByVerificationId.set(verificationId, currentDocs);
   }

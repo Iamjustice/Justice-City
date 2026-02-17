@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,23 +6,302 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ShieldCheck, Upload, CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import { getSmileLinkFallbackUrl } from "@/lib/verification";
+import {
+  VerificationApiError,
+  getSmileLinkFallbackUrl,
+  sendEmailOtp,
+  sendPhoneOtp,
+  uploadVerificationDocument,
+  verifyEmailOtp,
+  verifyPhoneOtp,
+} from "@/lib/verification";
 import { useToast } from "@/hooks/use-toast";
 
 export default function VerificationPage() {
   const [, setLocation] = useLocation();
   const [step, setStep] = useState(1);
-  const { verifyIdentity, isLoading } = useAuth();
+  const [otpMethod, setOtpMethod] = useState<"sms" | "email">("sms");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [resendCooldownSec, setResendCooldownSec] = useState(0);
+  const [verifyBlockedSec, setVerifyBlockedSec] = useState(0);
+  const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
+  const [isSavingDocument, setIsSavingDocument] = useState(false);
+  const [verificationId, setVerificationId] = useState("");
+  const { verifyIdentity, isLoading, user } = useAuth();
   const { toast } = useToast();
 
-  const handleNext = async () => {
-    if (step < 3) {
-      setStep(step + 1);
+  const normalizePhone = (value: string): string => value.replace(/\s+/g, "").trim();
+  const normalizeEmail = (value: string): string => value.trim().toLowerCase();
+
+  useEffect(() => {
+    if (!user?.email) return;
+    setEmail((current) => (current.trim() ? current : user.email));
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (resendCooldownSec <= 0 && verifyBlockedSec <= 0) return;
+
+    const timer = window.setInterval(() => {
+      setResendCooldownSec((current) => (current > 0 ? current - 1 : 0));
+      setVerifyBlockedSec((current) => (current > 0 ? current - 1 : 0));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [resendCooldownSec, verifyBlockedSec]);
+
+  const resetOtpState = () => {
+    setOtpSent(false);
+    setOtpCode("");
+    setResendCooldownSec(0);
+    setVerifyBlockedSec(0);
+    setAttemptsRemaining(null);
+  };
+
+  const handleSendCode = async () => {
+    const normalizedPhone = normalizePhone(phone);
+    const normalizedEmail = normalizeEmail(email);
+    if (otpMethod === "sms") {
+      if (!normalizedPhone) {
+        toast({
+          title: "Phone number required",
+          description: "Enter your phone number in international format, e.g. +2349012345678.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
+        toast({
+          title: "Invalid phone format",
+          description: "Use E.164 format, e.g. +2349012345678.",
+          variant: "destructive",
+        });
+        return;
+      }
+    } else {
+      if (!normalizedEmail) {
+        toast({
+          title: "Email required",
+          description: "Enter the email address you want to verify.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        toast({
+          title: "Invalid email",
+          description: "Enter a valid email address.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    if (resendCooldownSec > 0) {
+      toast({
+        title: "Please wait",
+        description: `You can request another code in ${resendCooldownSec}s.`,
+      });
       return;
     }
 
+    setIsSendingCode(true);
     try {
-      const isApproved = await verifyIdentity();
+      const result =
+        otpMethod === "sms"
+          ? await sendPhoneOtp(normalizedPhone)
+          : await sendEmailOtp(normalizedEmail);
+
+      setOtpSent(true);
+      setAttemptsRemaining(null);
+      setVerifyBlockedSec(0);
+      setResendCooldownSec(
+        typeof result.cooldownSec === "number" && result.cooldownSec > 0 ? result.cooldownSec : 60,
+      );
+      toast({
+        title: "Code sent",
+        description:
+          otpMethod === "sms"
+            ? "Enter the SMS code to continue."
+            : "Enter the email code to continue.",
+      });
+    } catch (error) {
+      if (error instanceof VerificationApiError && typeof error.retryAfterSec === "number") {
+        setResendCooldownSec(Math.max(0, error.retryAfterSec));
+      }
+      const message = error instanceof Error ? error.message : "Failed to send OTP code.";
+      toast({
+        title: "OTP send failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSendingCode(false);
+    }
+  };
+
+  const handleVerifyCode = async () => {
+    const normalizedPhone = normalizePhone(phone);
+    const normalizedEmail = normalizeEmail(email);
+    const token = otpCode.trim();
+
+    if (otpMethod === "sms") {
+      if (!normalizedPhone) {
+        toast({
+          title: "Phone number required",
+          description: "Enter your phone number in international format, e.g. +2349012345678.",
+          variant: "destructive",
+        });
+        return;
+      }
+    } else {
+      if (!normalizedEmail) {
+        toast({
+          title: "Email required",
+          description: "Enter the email address you want to verify.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    if (!token) {
+      toast({
+        title: "Code required",
+        description: "Enter the OTP code sent to your phone.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (verifyBlockedSec > 0) {
+      toast({
+        title: "Too many attempts",
+        description: `Please wait ${verifyBlockedSec}s before trying another code.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsVerifyingCode(true);
+    try {
+      const result =
+        otpMethod === "sms"
+          ? await verifyPhoneOtp(normalizedPhone, token, user?.id)
+          : await verifyEmailOtp(normalizedEmail, token, user?.id);
+      if (!result.valid) {
+        const remaining = typeof result.attemptsRemaining === "number" ? result.attemptsRemaining : null;
+        setAttemptsRemaining(remaining);
+        toast({
+          title: "Invalid code",
+          description:
+            remaining !== null
+              ? `${result.message ?? "Invalid or expired code."} Attempts left: ${remaining}.`
+              : (result.message ?? "Invalid or expired code."),
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setAttemptsRemaining(null);
+      setVerifyBlockedSec(0);
+      setStep(2);
+      toast({
+        title: "Phone verified",
+        description: "Proceed to upload your identity document.",
+      });
+    } catch (error) {
+      if (error instanceof VerificationApiError) {
+        if (typeof error.retryAfterSec === "number") {
+          setVerifyBlockedSec(Math.max(0, error.retryAfterSec));
+        }
+        if (typeof error.attemptsRemaining === "number") {
+          setAttemptsRemaining(error.attemptsRemaining);
+        }
+      }
+      const message = error instanceof Error ? error.message : "Invalid or expired OTP code.";
+      toast({
+        title: "OTP verification failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
+
+  const handleContinueToBiometric = async () => {
+    if (!selectedDocument) {
+      toast({
+        title: "Upload required",
+        description: "Please choose your ID document before continuing.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!user?.id) {
+      toast({
+        title: "Session required",
+        description: "Please sign in again before uploading your document.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSavingDocument(true);
+    try {
+      const contentBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result !== "string") {
+            reject(new Error("Failed to read selected document."));
+            return;
+          }
+          resolve(reader.result);
+        };
+        reader.onerror = () => reject(new Error("Failed to read selected document."));
+        reader.readAsDataURL(selectedDocument);
+      });
+
+      const uploaded = await uploadVerificationDocument({
+        userId: user.id,
+        documentType: "identity",
+        fileName: selectedDocument.name,
+        mimeType: selectedDocument.type || undefined,
+        fileSizeBytes: selectedDocument.size,
+        contentBase64,
+        verificationId: verificationId || undefined,
+      });
+
+      setVerificationId(uploaded.verificationId);
+      setStep(3);
+      toast({
+        title: "Document captured",
+        description: "Document uploaded securely. Continue with biometric scan.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to upload verification document.";
+      toast({
+        title: "Upload failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingDocument(false);
+    }
+  };
+
+  const handleStartScan = async () => {
+    try {
+      const isApproved = await verifyIdentity({
+        verificationId: verificationId || undefined,
+      });
       setLocation(isApproved ? "/dashboard" : "/profile");
     } catch {
       const fallbackUrl = getSmileLinkFallbackUrl();
@@ -68,15 +347,107 @@ export default function VerificationPage() {
           {step === 1 && (
             <div className="space-y-6 text-center">
               <div className="space-y-2">
-                <h3 className="text-lg font-semibold">Step 1: Phone Verification</h3>
-                <p className="text-slate-500 text-sm">We'll send a code to your mobile device</p>
+                <h3 className="text-lg font-semibold">Step 1: Contact Verification</h3>
+                <p className="text-slate-500 text-sm">Choose SMS or Email OTP to continue</p>
               </div>
               <div className="max-w-xs mx-auto space-y-4">
-                <div className="space-y-2 text-left">
-                  <Label htmlFor="phone">Phone Number</Label>
-                  <Input id="phone" placeholder="+234 906 534 0189" />
+                <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+                  <Button
+                    type="button"
+                    variant={otpMethod === "sms" ? "default" : "ghost"}
+                    className={otpMethod === "sms" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                    onClick={() => {
+                      setOtpMethod("sms");
+                      resetOtpState();
+                    }}
+                  >
+                    SMS OTP
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={otpMethod === "email" ? "default" : "ghost"}
+                    className={otpMethod === "email" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                    onClick={() => {
+                      setOtpMethod("email");
+                      resetOtpState();
+                    }}
+                  >
+                    Email OTP
+                  </Button>
                 </div>
-                <Button onClick={handleNext} className="w-full bg-blue-600">Send Code</Button>
+                {otpMethod === "sms" ? (
+                  <div className="space-y-2 text-left">
+                    <Label htmlFor="phone">Phone Number</Label>
+                    <Input
+                      id="phone"
+                      placeholder="+2349012345678"
+                      value={phone}
+                      onChange={(event) => setPhone(event.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-left">
+                    <Label htmlFor="email">Email Address</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      placeholder="you@company.com"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                    />
+                  </div>
+                )}
+                {!otpSent ? (
+                  <Button
+                    onClick={handleSendCode}
+                    className="w-full bg-blue-600"
+                    disabled={isSendingCode || resendCooldownSec > 0}
+                  >
+                    {isSendingCode
+                      ? "Sending..."
+                      : resendCooldownSec > 0
+                        ? `Send Code (${resendCooldownSec}s)`
+                        : "Send Code"}
+                  </Button>
+                ) : (
+                  <>
+                    <div className="space-y-2 text-left">
+                      <Label htmlFor="otp-code">Verification Code</Label>
+                      <Input
+                        id="otp-code"
+                        placeholder="Enter 6-digit code"
+                        inputMode="numeric"
+                        value={otpCode}
+                        onChange={(event) => setOtpCode(event.target.value)}
+                      />
+                    </div>
+                    <Button
+                      onClick={handleVerifyCode}
+                      className="w-full bg-blue-600"
+                      disabled={isVerifyingCode || verifyBlockedSec > 0}
+                    >
+                      {isVerifyingCode
+                        ? "Verifying..."
+                        : verifyBlockedSec > 0
+                          ? `Verify Code (${verifyBlockedSec}s)`
+                          : "Verify Code"}
+                    </Button>
+                    {attemptsRemaining !== null ? (
+                      <p className="text-xs text-amber-700 text-left">
+                        Attempts remaining: {attemptsRemaining}
+                      </p>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full"
+                      onClick={handleSendCode}
+                      disabled={isSendingCode || resendCooldownSec > 0}
+                    >
+                      {resendCooldownSec > 0 ? `Resend Code (${resendCooldownSec}s)` : "Resend Code"}
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -87,7 +458,10 @@ export default function VerificationPage() {
                 <h3 className="text-lg font-semibold">Step 2: Upload Government ID</h3>
                 <p className="text-slate-500 text-sm">Identity document, International Passport, or Driver's License</p>
               </div>
-              <div className="border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:border-blue-400 transition-colors cursor-pointer group">
+              <label
+                htmlFor="verification-document"
+                className="block border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:border-blue-400 transition-colors cursor-pointer group"
+              >
                 <div className="flex flex-col items-center gap-4">
                   <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                     <Upload className="w-8 h-8 text-blue-600" />
@@ -95,10 +469,29 @@ export default function VerificationPage() {
                   <div className="space-y-1">
                     <p className="font-semibold text-slate-900">Click to upload or drag and drop</p>
                     <p className="text-xs text-slate-500">PNG, JPG or PDF (max. 5MB)</p>
+                    {selectedDocument ? (
+                      <p className="text-xs text-green-700 font-medium">Selected: {selectedDocument.name}</p>
+                    ) : null}
                   </div>
                 </div>
-              </div>
-              <Button onClick={handleNext} className="w-full bg-blue-600">Continue</Button>
+                <input
+                  id="verification-document"
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp,.pdf"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setSelectedDocument(file);
+                  }}
+                />
+              </label>
+              <Button
+                onClick={handleContinueToBiometric}
+                className="w-full bg-blue-600"
+                disabled={!selectedDocument || isSavingDocument}
+              >
+                {isSavingDocument ? "Saving..." : "Continue"}
+              </Button>
             </div>
           )}
 
@@ -112,7 +505,7 @@ export default function VerificationPage() {
                 <div className="absolute inset-0 bg-gradient-to-b from-blue-500/10 to-transparent"></div>
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-64 border-2 border-white/20 rounded-[40%]"></div>
               </div>
-              <Button onClick={handleNext} className="w-full bg-blue-600" disabled={isLoading}>
+              <Button onClick={handleStartScan} className="w-full bg-blue-600" disabled={isLoading}>
                 {isLoading ? "Submitting to Smile ID..." : "Start Scan"}
               </Button>
             </div>

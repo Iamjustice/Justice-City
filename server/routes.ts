@@ -41,6 +41,17 @@ import {
   listHiringApplications,
   updateHiringApplicationStatus,
 } from "./hiring-repository";
+import { checkPhoneVerificationCode, sendPhoneVerificationCode } from "./twilio-verify";
+import { checkEmailVerificationCode, sendEmailVerificationCode } from "./email-otp";
+import {
+  checkPhoneSendAllowed,
+  checkPhoneVerifyAllowed,
+  getPhoneOtpPolicy,
+  markPhoneCodeSent,
+  markPhoneVerifyFailed,
+  markPhoneVerifySucceeded,
+} from "./phone-otp-guard";
+import { uploadVerificationDocument } from "./verification-documents-repository";
 
 const CHAT_CONVERSATIONS_TABLE =
   process.env.SUPABASE_CHAT_CONVERSATIONS_TABLE || "chat_conversations";
@@ -49,6 +60,7 @@ const SERVICE_REQUESTS_TABLE =
 const CONVERSATION_TRANSCRIPTS_TABLE =
   process.env.SUPABASE_CONVERSATION_TRANSCRIPTS_TABLE || "conversation_transcripts";
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
+const VERIFICATIONS_TABLE = process.env.SUPABASE_VERIFICATIONS_TABLE || "verifications";
 
 function createSupabaseServiceClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
@@ -143,6 +155,22 @@ function normalizeUserRole(rawRole: unknown): AppUserRole {
   }
   if (role === "owner" || role === "renter") return role;
   return "buyer";
+}
+
+function normalizePhoneNumber(rawValue: unknown): string {
+  return String(rawValue ?? "").replace(/\s+/g, "").trim();
+}
+
+function isE164Phone(value: string): boolean {
+  return /^\+[1-9]\d{7,14}$/.test(value);
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function buildFallbackUsername(email: string | null | undefined, userId: string): string {
@@ -1406,11 +1434,296 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/verification/phone/send", async (req: Request, res: Response) => {
+    try {
+      const phone = normalizePhoneNumber(req.body?.phone);
+      if (!phone) {
+        return res.status(400).json({ message: "phone is required" });
+      }
+      if (!isE164Phone(phone)) {
+        return res.status(400).json({
+          message: "Phone number must be in international format (E.164), e.g. +2349012345678.",
+        });
+      }
+
+      const sendAllowed = await checkPhoneSendAllowed(phone);
+      if (!sendAllowed.ok) {
+        const policy = getPhoneOtpPolicy();
+        const message =
+          sendAllowed.reason === "cooldown"
+            ? `Please wait ${sendAllowed.retryAfterSec}s before requesting another OTP code.`
+            : `Too many OTP requests. Try again in ${sendAllowed.retryAfterSec}s.`;
+
+        return res.status(429).json({
+          message,
+          retryAfterSec: sendAllowed.retryAfterSec,
+          policy,
+        });
+      }
+
+      const result = await sendPhoneVerificationCode(phone);
+      await markPhoneCodeSent(phone);
+      return res.status(200).json({
+        ok: true,
+        status: result.status,
+        to: result.to,
+        channel: result.channel,
+        cooldownSec: getPhoneOtpPolicy().sendCooldownSec,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to send phone verification code";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/verification/phone/check", async (req: Request, res: Response) => {
+    try {
+      const phone = normalizePhoneNumber(req.body?.phone);
+      const code = String(req.body?.code ?? "").trim();
+      const userId = String(req.body?.userId ?? "").trim();
+
+      if (!phone) {
+        return res.status(400).json({ message: "phone is required" });
+      }
+      if (!isE164Phone(phone)) {
+        return res.status(400).json({
+          message: "Phone number must be in international format (E.164), e.g. +2349012345678.",
+        });
+      }
+      if (!code) {
+        return res.status(400).json({ message: "code is required" });
+      }
+
+      const verifyAllowed = await checkPhoneVerifyAllowed(phone);
+      if (!verifyAllowed.ok) {
+        return res.status(429).json({
+          message: `Too many invalid code attempts. Try again in ${verifyAllowed.retryAfterSec}s.`,
+          retryAfterSec: verifyAllowed.retryAfterSec,
+          policy: getPhoneOtpPolicy(),
+        });
+      }
+
+      const result = await checkPhoneVerificationCode(phone, code);
+      const approved = result.valid || result.status === "approved";
+
+      if (!approved) {
+        const failedState = await markPhoneVerifyFailed(phone);
+        if (failedState.blocked) {
+          return res.status(429).json({
+            ok: false,
+            valid: false,
+            status: result.status,
+            to: result.to,
+            message: `Too many invalid code attempts. Try again in ${failedState.retryAfterSec}s.`,
+            retryAfterSec: failedState.retryAfterSec,
+            attemptsRemaining: 0,
+          });
+        }
+
+        return res.status(200).json({
+          ok: false,
+          valid: false,
+          status: result.status,
+          to: result.to,
+          message: "Invalid or expired code.",
+          attemptsRemaining: failedState.attemptsRemaining,
+        });
+      }
+
+      await markPhoneVerifySucceeded(phone);
+
+      if (approved && userId) {
+        const client = createSupabaseServiceClient();
+        if (client) {
+          const { error } = await client.from(USERS_TABLE).update({ phone }).eq("id", userId);
+          if (error && !isMissingTableOrColumnError(error)) {
+            throw new Error(`Phone verification succeeded, but failed to persist phone number: ${error.message}`);
+          }
+        }
+      }
+
+      return res.status(200).json({
+        ok: approved,
+        valid: approved,
+        status: result.status,
+        to: result.to,
+        attemptsRemaining: getPhoneOtpPolicy().maxVerifyAttempts,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to verify phone code";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/verification/email/send", async (req: Request, res: Response) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      if (!email) {
+        return res.status(400).json({ message: "email is required" });
+      }
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ message: "A valid email address is required." });
+      }
+
+      const guardKey = `email:${email}`;
+      const sendAllowed = await checkPhoneSendAllowed(guardKey);
+      if (!sendAllowed.ok) {
+        const policy = getPhoneOtpPolicy();
+        const message =
+          sendAllowed.reason === "cooldown"
+            ? `Please wait ${sendAllowed.retryAfterSec}s before requesting another OTP code.`
+            : `Too many OTP requests. Try again in ${sendAllowed.retryAfterSec}s.`;
+
+        return res.status(429).json({
+          message,
+          retryAfterSec: sendAllowed.retryAfterSec,
+          policy,
+        });
+      }
+
+      const result = await sendEmailVerificationCode(email);
+      await markPhoneCodeSent(guardKey);
+
+      return res.status(200).json({
+        ok: true,
+        status: result.status,
+        to: result.to,
+        channel: "email",
+        cooldownSec: getPhoneOtpPolicy().sendCooldownSec,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to send email verification code";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/verification/email/check", async (req: Request, res: Response) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const code = String(req.body?.code ?? "").trim();
+      const userId = String(req.body?.userId ?? "").trim();
+
+      if (!email) {
+        return res.status(400).json({ message: "email is required" });
+      }
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ message: "A valid email address is required." });
+      }
+      if (!code) {
+        return res.status(400).json({ message: "code is required" });
+      }
+
+      const guardKey = `email:${email}`;
+      const verifyAllowed = await checkPhoneVerifyAllowed(guardKey);
+      if (!verifyAllowed.ok) {
+        return res.status(429).json({
+          message: `Too many invalid code attempts. Try again in ${verifyAllowed.retryAfterSec}s.`,
+          retryAfterSec: verifyAllowed.retryAfterSec,
+          policy: getPhoneOtpPolicy(),
+        });
+      }
+
+      const result = await checkEmailVerificationCode(email, code);
+      const approved = result.valid || result.status === "approved";
+
+      if (!approved) {
+        const failedState = await markPhoneVerifyFailed(guardKey);
+        if (failedState.blocked) {
+          return res.status(429).json({
+            ok: false,
+            valid: false,
+            status: result.status,
+            to: result.to,
+            message: `Too many invalid code attempts. Try again in ${failedState.retryAfterSec}s.`,
+            retryAfterSec: failedState.retryAfterSec,
+            attemptsRemaining: 0,
+          });
+        }
+
+        return res.status(200).json({
+          ok: false,
+          valid: false,
+          status: result.status,
+          to: result.to,
+          message: result.status === "expired" ? "Code expired. Request a new one." : "Invalid code.",
+          attemptsRemaining: failedState.attemptsRemaining,
+        });
+      }
+
+      await markPhoneVerifySucceeded(guardKey);
+
+      if (approved && userId) {
+        const client = createSupabaseServiceClient();
+        if (client) {
+          const { error } = await client.from(USERS_TABLE).update({ email }).eq("id", userId);
+          if (error && !isMissingTableOrColumnError(error)) {
+            throw new Error(
+              `Email verification succeeded, but failed to persist email on user profile: ${error.message}`,
+            );
+          }
+        }
+      }
+
+      return res.status(200).json({
+        ok: true,
+        valid: true,
+        status: "approved",
+        to: result.to,
+        attemptsRemaining: getPhoneOtpPolicy().maxVerifyAttempts,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to verify email code";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/verification/documents/upload", async (req: Request, res: Response) => {
+    try {
+      const userId = String(req.body?.userId ?? "").trim();
+      const documentType = String(req.body?.documentType ?? "identity").trim();
+      const fileName = String(req.body?.fileName ?? "").trim();
+      const mimeType = String(req.body?.mimeType ?? "").trim();
+      const contentBase64 = String(req.body?.contentBase64 ?? "").trim();
+      const verificationId = String(req.body?.verificationId ?? "").trim();
+      const fileSizeRaw = req.body?.fileSizeBytes;
+      const fileSizeBytes =
+        typeof fileSizeRaw === "number" && Number.isFinite(fileSizeRaw)
+          ? Math.max(0, Math.trunc(fileSizeRaw))
+          : undefined;
+
+      if (!userId) {
+        return res.status(400).json({ message: "userId is required" });
+      }
+      if (!fileName) {
+        return res.status(400).json({ message: "fileName is required" });
+      }
+      if (!contentBase64) {
+        return res.status(400).json({ message: "contentBase64 is required" });
+      }
+
+      const uploaded = await uploadVerificationDocument({
+        userId,
+        documentType,
+        fileName,
+        mimeType: mimeType || undefined,
+        fileSizeBytes,
+        contentBase64,
+        verificationId: verificationId || undefined,
+      });
+
+      return res.status(201).json(uploaded);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to upload verification document";
+      return res.status(502).json({ message });
+    }
+  });
+
   app.post("/api/verification/smile-id", async (req: Request, res: Response) => {
     try {
       const {
         mode = "biometric",
         userId,
+        verificationId,
         country,
         idType,
         idNumber,
@@ -1442,21 +1755,54 @@ export async function registerRoutes(
         selfieImageBase64,
       });
 
-      await saveVerification({
-        user_id: userId,
-        mode,
-        provider: result.provider,
-        status: result.status,
-        job_id: result.jobId,
-        smile_job_id: result.smileJobId ?? null,
-        message: result.message,
-      });
+      let linkedToExistingVerification = false;
+      const normalizedVerificationId = String(verificationId ?? "").trim();
+      if (normalizedVerificationId) {
+        const client = createSupabaseServiceClient();
+        if (client) {
+          const { data: updated, error: updateError } = await client
+            .from(VERIFICATIONS_TABLE)
+            .update({
+              mode,
+              provider: result.provider,
+              status: result.status,
+              job_id: result.jobId,
+              smile_job_id: result.smileJobId ?? null,
+              message: result.message,
+            })
+            .eq("id", normalizedVerificationId)
+            .eq("user_id", userId)
+            .select("id")
+            .maybeSingle<{ id: string }>();
+
+          if (updateError && !isMissingTableOrColumnError(updateError)) {
+            throw new Error(`Failed to attach Smile result to existing verification: ${updateError.message}`);
+          }
+
+          linkedToExistingVerification = Boolean(updated?.id);
+        }
+      }
+
+      if (!linkedToExistingVerification) {
+        await saveVerification({
+          user_id: userId,
+          mode,
+          provider: result.provider,
+          status: result.status,
+          job_id: result.jobId,
+          smile_job_id: result.smileJobId ?? null,
+          message: result.message,
+        });
+      }
 
       if (result.status === "approved") {
         await setUserVerificationState(userId, true);
       }
 
-      return res.status(200).json(result);
+      return res.status(200).json({
+        ...result,
+        verificationId: normalizedVerificationId || undefined,
+      });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Verification request failed";

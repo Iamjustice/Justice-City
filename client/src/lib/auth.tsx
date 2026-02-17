@@ -32,7 +32,7 @@ interface AuthContextType {
   signIn: (payload: SignInPayload) => Promise<void>;
   signUp: (payload: SignUpPayload) => Promise<boolean>;
   logout: () => Promise<void>;
-  verifyIdentity: () => Promise<boolean>;
+  verifyIdentity: (options?: { verificationId?: string }) => Promise<boolean>;
   updateProfileAvatar: (file: File) => Promise<void>;
 }
 
@@ -274,7 +274,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     toast({ title: "Logged out" });
   };
 
-  const verifyIdentity = async (): Promise<boolean> => {
+  const verifyIdentity = async (
+    options?: { verificationId?: string },
+  ): Promise<boolean> => {
     if (!user) return false;
 
     setIsLoading(true);
@@ -282,6 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const verification = await submitVerification({
         mode: "biometric",
         userId: user.id,
+        verificationId: options?.verificationId,
         country: "NG",
         firstName: user.name.split(" ")[0],
         lastName: user.name.split(" ").slice(1).join(" ") || "User",
