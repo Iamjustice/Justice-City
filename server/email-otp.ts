@@ -15,6 +15,8 @@ type SendEmailOtpResult = {
   to: string;
   status: "pending";
   ttlSec: number;
+  providerMessageId?: string;
+  templateUsed?: boolean;
 };
 
 type CheckEmailOtpResult = {
@@ -65,7 +67,10 @@ function generateOtpCode(): string {
   return String(randomInt(100000, 1000000));
 }
 
-async function sendEmailViaSendGrid(to: string, code: string): Promise<void> {
+async function sendEmailViaSendGrid(
+  to: string,
+  code: string,
+): Promise<{ messageId?: string; templateUsed: boolean }> {
   const apiKey = String(process.env.SENDGRID_API_KEY ?? "").trim();
   const fromEmail = String(process.env.SENDGRID_FROM_EMAIL ?? "").trim();
   const fromName = String(process.env.SENDGRID_FROM_NAME ?? "Justice City").trim();
@@ -152,6 +157,12 @@ async function sendEmailViaSendGrid(to: string, code: string): Promise<void> {
     }
     throw new Error(message);
   }
+
+  const messageId = String(response.headers.get("x-message-id") ?? "").trim() || undefined;
+  return {
+    messageId,
+    templateUsed: Boolean(templateId),
+  };
 }
 
 async function upsertEmailOtp(
@@ -204,12 +215,14 @@ export async function sendEmailVerificationCode(email: string): Promise<SendEmai
     throw error;
   }
 
-  await sendEmailViaSendGrid(normalizedEmail, code);
+  const provider = await sendEmailViaSendGrid(normalizedEmail, code);
 
   return {
     to: normalizedEmail,
     status: "pending",
     ttlSec: EMAIL_OTP_TTL_SEC,
+    providerMessageId: provider.messageId,
+    templateUsed: provider.templateUsed,
   };
 }
 

@@ -1584,13 +1584,15 @@ export async function registerRoutes(
       const result = await sendEmailVerificationCode(email);
       await markPhoneCodeSent(guardKey);
 
-      return res.status(200).json({
-        ok: true,
-        status: result.status,
-        to: result.to,
-        channel: "email",
-        cooldownSec: getPhoneOtpPolicy().sendCooldownSec,
-      });
+        return res.status(200).json({
+          ok: true,
+          status: result.status,
+          to: result.to,
+          channel: "email",
+          cooldownSec: getPhoneOtpPolicy().sendCooldownSec,
+          providerMessageId: result.providerMessageId ?? null,
+          templateUsed: Boolean(result.templateUsed),
+        });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to send email verification code";
       return res.status(502).json({ message });
