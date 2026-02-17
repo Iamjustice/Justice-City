@@ -69,14 +69,68 @@ async function sendEmailViaSendGrid(to: string, code: string): Promise<void> {
   const apiKey = String(process.env.SENDGRID_API_KEY ?? "").trim();
   const fromEmail = String(process.env.SENDGRID_FROM_EMAIL ?? "").trim();
   const fromName = String(process.env.SENDGRID_FROM_NAME ?? "Justice City").trim();
+  const templateId = String(process.env.SENDGRID_TEMPLATE_ID ?? "").trim();
+  const templateCodeKey = String(process.env.SENDGRID_TEMPLATE_CODE_KEY ?? "code").trim() || "code";
+  const templateExpiryKey =
+    String(process.env.SENDGRID_TEMPLATE_EXPIRY_MIN_KEY ?? "expiryMinutes").trim() || "expiryMinutes";
+  const templateBrandKey =
+    String(process.env.SENDGRID_TEMPLATE_BRAND_KEY ?? "brandName").trim() || "brandName";
+  const brandName = String(process.env.SENDGRID_BRAND_NAME ?? (fromName || "Justice City")).trim();
+  const expiryMinutes = Math.max(1, Math.floor(EMAIL_OTP_TTL_SEC / 60));
 
   if (!apiKey || !fromEmail) {
     throw new Error("SENDGRID_API_KEY and SENDGRID_FROM_EMAIL are required for email OTP.");
   }
 
   const subject = "Justice City verification code";
-  const textContent = `Your verification code is ${code}. It expires in ${Math.max(1, Math.floor(EMAIL_OTP_TTL_SEC / 60))} minutes.`;
-  const htmlContent = `<p>Your verification code is <strong>${code}</strong>.</p><p>This code expires in ${Math.max(1, Math.floor(EMAIL_OTP_TTL_SEC / 60))} minutes.</p>`;
+  const textContent = `Your verification code is ${code}. It expires in ${expiryMinutes} minutes.`;
+  const htmlContent = `<p>Your verification code is <strong>${code}</strong>.</p><p>This code expires in ${expiryMinutes} minutes.</p>`;
+
+  const requestBody: Record<string, unknown> = {
+    personalizations: [
+      {
+        to: [{ email: to }],
+      },
+    ],
+    from: {
+      email: fromEmail,
+      name: fromName || undefined,
+    },
+  };
+
+  if (templateId) {
+    const templateData: Record<string, string | number> = {
+      [templateCodeKey]: code,
+      [templateExpiryKey]: expiryMinutes,
+      [templateBrandKey]: brandName,
+      // Backward/legacy keys for templates using Twilio-style placeholders.
+      code,
+      expiryMinutes,
+      brandName,
+      twilio_code: code,
+      ttl: String(expiryMinutes),
+      twilio_service_name: brandName,
+    };
+
+    requestBody.template_id = templateId;
+    requestBody.personalizations = [
+      {
+        to: [{ email: to }],
+        dynamic_template_data: templateData,
+      },
+    ];
+  } else {
+    requestBody.personalizations = [
+      {
+        to: [{ email: to }],
+        subject,
+      },
+    ];
+    requestBody.content = [
+      { type: "text/plain", value: textContent },
+      { type: "text/html", value: htmlContent },
+    ];
+  }
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -84,22 +138,7 @@ async function sendEmailViaSendGrid(to: string, code: string): Promise<void> {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      personalizations: [
-        {
-          to: [{ email: to }],
-          subject,
-        },
-      ],
-      from: {
-        email: fromEmail,
-        name: fromName || undefined,
-      },
-      content: [
-        { type: "text/plain", value: textContent },
-        { type: "text/html", value: htmlContent },
-      ],
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -244,4 +283,3 @@ export async function checkEmailVerificationCode(
     status: "approved",
   };
 }
-
