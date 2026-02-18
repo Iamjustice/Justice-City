@@ -213,7 +213,7 @@ export default function VerificationPage() {
       setVerifyBlockedSec(0);
       setStep(2);
       toast({
-        title: "Phone verified",
+        title: otpMethod === "sms" ? "Phone verified" : "Email verified",
         description: "Proceed to upload your identity document.",
       });
     } catch (error) {

@@ -67,6 +67,34 @@ function generateOtpCode(): string {
   return String(randomInt(100000, 1000000));
 }
 
+function normalizeLegacyTemplatePlaceholders(templateHtml: string): string {
+  return String(templateHtml ?? "")
+    .replace(/\{\{\s*1\s*\}\}/g, "{{code}}")
+    .replace(/\{\{\s*2\s*\}\}/g, "{{app_name}}")
+    .replace(/\{\{\s*3\s*\}\}/g, "{{expires_in_minutes}}");
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderTemplateHtml(
+  templateHtml: string,
+  templateData: Record<string, string | number>,
+): string {
+  const normalized = normalizeLegacyTemplatePlaceholders(templateHtml);
+  return normalized.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, rawKey: string) => {
+    const key = String(rawKey ?? "").trim();
+    if (!key) return "";
+    return escapeHtml(templateData[key] ?? "");
+  });
+}
+
 async function sendEmailViaSendGrid(
   to: string,
   code: string,
@@ -80,6 +108,7 @@ async function sendEmailViaSendGrid(
     String(process.env.SENDGRID_TEMPLATE_EXPIRY_MIN_KEY ?? "expiryMinutes").trim() || "expiryMinutes";
   const templateBrandKey =
     String(process.env.SENDGRID_TEMPLATE_BRAND_KEY ?? "brandName").trim() || "brandName";
+  const rawHtmlTemplate = String(process.env.SENDGRID_TEMPLATE_HTML ?? "").trim();
   const brandName = String(process.env.SENDGRID_BRAND_NAME ?? (fromName || "Justice City")).trim();
   const expiryMinutes = Math.max(1, Math.floor(EMAIL_OTP_TTL_SEC / 60));
 
@@ -103,19 +132,24 @@ async function sendEmailViaSendGrid(
     },
   };
 
+  const templateData: Record<string, string | number> = {
+    [templateCodeKey]: code,
+    [templateExpiryKey]: expiryMinutes,
+    [templateBrandKey]: brandName,
+    code,
+    app_name: brandName,
+    expires_in_minutes: expiryMinutes,
+    expiryMinutes,
+    brandName,
+    twilio_code: code,
+    ttl: String(expiryMinutes),
+    twilio_service_name: brandName,
+    "1": code,
+    "2": brandName,
+    "3": expiryMinutes,
+  };
+
   if (templateId) {
-    const templateData: Record<string, string | number> = {
-      [templateCodeKey]: code,
-      [templateExpiryKey]: expiryMinutes,
-      [templateBrandKey]: brandName,
-      // Backward/legacy keys for templates using Twilio-style placeholders.
-      code,
-      expiryMinutes,
-      brandName,
-      twilio_code: code,
-      ttl: String(expiryMinutes),
-      twilio_service_name: brandName,
-    };
 
     requestBody.template_id = templateId;
     requestBody.personalizations = [
@@ -123,6 +157,17 @@ async function sendEmailViaSendGrid(
         to: [{ email: to }],
         dynamic_template_data: templateData,
       },
+    ];
+  } else if (rawHtmlTemplate) {
+    requestBody.personalizations = [
+      {
+        to: [{ email: to }],
+        subject,
+      },
+    ];
+    requestBody.content = [
+      { type: "text/plain", value: textContent },
+      { type: "text/html", value: renderTemplateHtml(rawHtmlTemplate, templateData) },
     ];
   } else {
     requestBody.personalizations = [

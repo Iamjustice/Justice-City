@@ -231,7 +231,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-12">
         <div className="container mx-auto px-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <BrandLogo className="h-7 max-w-[180px]" />
@@ -240,33 +240,35 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 Restoring trust in real estate through mandatory identity and property verification.
               </p>
             </div>
-            
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-4">Platform</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><Link href="/" className="hover:text-blue-600">Marketplace</Link></li>
-                <li><Link href="/verify" className="hover:text-blue-600">Verification</Link></li>
-                <li><Link href="/services" className="hover:text-blue-600">Pricing</Link></li>
-                <li><Link href="/hiring" className="hover:text-blue-600">Hiring</Link></li>
-              </ul>
-            </div>
 
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-4">Legal</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><Link href="/terms-of-service" className="hover:text-blue-600">Terms of Service</Link></li>
-                <li><Link href="/privacy-policy" className="hover:text-blue-600">Privacy Policy</Link></li>
-                <li><Link href="/escrow-policy" className="hover:text-blue-600">Escrow Policy</Link></li>
-              </ul>
-            </div>
+            <div className="grid grid-cols-2 gap-8 md:col-span-3 md:grid-cols-3">
+              <div>
+                <h4 className="font-semibold text-slate-900 mb-4">Platform</h4>
+                <ul className="space-y-2 text-sm text-slate-600">
+                  <li><Link href="/" className="hover:text-blue-600">Marketplace</Link></li>
+                  <li><Link href="/verify" className="hover:text-blue-600">Verification</Link></li>
+                  <li><Link href="/services" className="hover:text-blue-600">Pricing</Link></li>
+                  <li><Link href="/hiring" className="hover:text-blue-600">Hiring</Link></li>
+                </ul>
+              </div>
 
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-4">Contact</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li>contact@justicecityltd.com</li>
-                <li>+234 906 534 0189</li>
-                <li>Owerri, Imo, Nigeria</li>
-              </ul>
+              <div>
+                <h4 className="font-semibold text-slate-900 mb-4">Legal</h4>
+                <ul className="space-y-2 text-sm text-slate-600">
+                  <li><Link href="/terms-of-service" className="hover:text-blue-600">Terms of Service</Link></li>
+                  <li><Link href="/privacy-policy" className="hover:text-blue-600">Privacy Policy</Link></li>
+                  <li><Link href="/escrow-policy" className="hover:text-blue-600">Escrow Policy</Link></li>
+                </ul>
+              </div>
+
+              <div className="col-start-1 md:col-start-auto">
+                <h4 className="font-semibold text-slate-900 mb-4">Contact</h4>
+                <ul className="space-y-2 text-sm text-slate-600">
+                  <li>contact@justicecityltd.com</li>
+                  <li>+234 906 534 0189</li>
+                  <li>Owerri, Imo, Nigeria</li>
+                </ul>
+              </div>
             </div>
           </div>
           <div className="mt-12 pt-8 border-t border-slate-100 text-center text-sm text-slate-400">

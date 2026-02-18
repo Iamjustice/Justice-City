@@ -52,6 +52,37 @@ import {
   markPhoneVerifySucceeded,
 } from "./phone-otp-guard";
 import { uploadVerificationDocument } from "./verification-documents-repository";
+import {
+  claimPayoutLedgerEntry,
+  createChatAction,
+  ensureUserExistsForOtp,
+  getTransactionByConversationId,
+  getTransactionByIdPublic,
+  listTransactionActions,
+  resolveChatAction,
+  transitionTransactionStatus,
+  upsertTransaction,
+  upsertTransactionRating,
+  type AppRole,
+  type ChatActionRecord,
+  type ChatActionType,
+  type TransactionRecord,
+  type TransactionStatus,
+} from "./transaction-flow-repository";
+import {
+  createServiceProviderLink,
+  enqueueServicePdfJob,
+  listOpenDisputes,
+  listProviderLinksByConversation,
+  listServicePdfJobs,
+  listTransactionDisputes,
+  openTransactionDispute,
+  processNextServicePdfJob,
+  resolveProviderPackageByToken,
+  resolveTransactionDispute,
+  revokeProviderLink,
+  setTransactionAcceptanceDueAt,
+} from "./service-automation-repository";
 
 const CHAT_CONVERSATIONS_TABLE =
   process.env.SUPABASE_CHAT_CONVERSATIONS_TABLE || "chat_conversations";
@@ -146,15 +177,124 @@ function getBearerToken(req: Request): string {
 
 type AppUserRole = "buyer" | "seller" | "agent" | "admin" | "owner" | "renter";
 
-function normalizeUserRole(rawRole: unknown): AppUserRole {
+function normalizeUserRole(
+  rawRole: unknown,
+  options?: { allowAdmin?: boolean },
+): AppUserRole {
   const role = String(rawRole ?? "")
     .trim()
     .toLowerCase();
-  if (role === "buyer" || role === "seller" || role === "agent" || role === "admin") {
+  const allowAdmin = Boolean(options?.allowAdmin);
+  if (role === "buyer" || role === "seller" || role === "agent") {
     return role;
+  }
+  if (role === "admin") {
+    return allowAdmin ? "admin" : "buyer";
   }
   if (role === "owner" || role === "renter") return role;
   return "buyer";
+}
+
+function normalizeActionRole(rawRole: unknown): AppRole {
+  const role = String(rawRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (role === "admin") return "admin";
+  if (role === "agent") return "agent";
+  if (role === "seller") return "seller";
+  if (role === "owner") return "owner";
+  if (role === "renter") return "renter";
+  if (role === "support") return "support";
+  return "buyer";
+}
+
+function toTransactionStatus(rawStatus: unknown): TransactionStatus {
+  return String(rawStatus ?? "")
+    .trim()
+    .toLowerCase() as TransactionStatus;
+}
+
+function toChatActionType(rawActionType: unknown): ChatActionType {
+  return String(rawActionType ?? "")
+    .trim()
+    .toLowerCase() as ChatActionType;
+}
+
+function resolveDirectAcceptanceDueAtIso(): string {
+  const minHours = 48;
+  const maxHours = 72;
+  const jitterHours = Math.floor(Math.random() * (maxHours - minHours + 1));
+  const totalHours = minHours + jitterHours;
+  return new Date(Date.now() + totalHours * 60 * 60 * 1000).toISOString();
+}
+
+function isPrivilegedActorRole(role: AppRole): boolean {
+  return role === "admin" || role === "support";
+}
+
+function resolvePublicAppBaseUrl(req: Request): string {
+  const configured = String(process.env.PUBLIC_APP_URL ?? process.env.APP_BASE_URL ?? "").trim();
+  if (configured) {
+    return configured.replace(/\/+$/g, "");
+  }
+
+  const forwardedProtoRaw = req.headers["x-forwarded-proto"];
+  const forwardedHostRaw = req.headers["x-forwarded-host"];
+  const proto =
+    (Array.isArray(forwardedProtoRaw) ? forwardedProtoRaw[0] : forwardedProtoRaw) ||
+    req.protocol ||
+    "https";
+  const host =
+    (Array.isArray(forwardedHostRaw) ? forwardedHostRaw[0] : forwardedHostRaw) ||
+    req.get("host") ||
+    "";
+
+  const safeProto = String(proto).split(",")[0].trim() || "https";
+  const safeHost = String(host).split(",")[0].trim();
+  if (!safeHost) return "";
+  return `${safeProto}://${safeHost}`;
+}
+
+function buildEscrowInstructionMessage(transaction: TransactionRecord): string {
+  const accountName = String(process.env.ESCROW_ACCOUNT_NAME ?? "Justice City Escrow").trim();
+  const accountNumber = String(process.env.ESCROW_ACCOUNT_NUMBER ?? "0000000000").trim();
+  const bankName = String(process.env.ESCROW_BANK_NAME ?? "Justice City Partner Bank").trim();
+  const reference = String(transaction.escrowReference ?? "").trim() || `TXN-${transaction.id.slice(0, 8).toUpperCase()}`;
+  return `Escrow payment approved. Pay to ${accountName}, ${bankName}, ${accountNumber}. Reference: ${reference}.`;
+}
+
+async function postTransactionActionMessage(args: {
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  senderRole?: string;
+  action: ChatActionRecord;
+  content?: string;
+}): Promise<void> {
+  await sendConversationMessage({
+    conversationId: args.conversationId,
+    senderId: args.senderId,
+    senderName: args.senderName,
+    senderRole: args.senderRole,
+    messageType: "issue_card",
+    content: args.content ?? "Action required",
+    metadata: {
+      issueCard: {
+        title: String(args.action.actionType ?? "").replace(/_/g, " ").toUpperCase(),
+        message: args.content ?? "Action required",
+        status: args.action.status,
+      },
+      actionCard: {
+        id: args.action.id,
+        transactionId: args.action.transactionId,
+        actionType: args.action.actionType,
+        targetRole: args.action.targetRole,
+        status: args.action.status,
+        payload: args.action.payload,
+        expiresAt: args.action.expiresAt,
+      },
+    },
+  });
 }
 
 function normalizePhoneNumber(rawValue: unknown): string {
@@ -240,6 +380,8 @@ async function buildAuthProfileFromToken(
   email: string;
   role: AppUserRole;
   isVerified: boolean;
+  emailVerified: boolean;
+  phoneVerified: boolean;
   avatar?: string;
 } | null> {
   const { data: authData, error: authError } = await client.auth.getUser(token);
@@ -254,7 +396,7 @@ async function buildAuthProfileFromToken(
 
   const { data: userRow, error: userError } = await client
     .from(USERS_TABLE)
-    .select("id, full_name, email, role, is_verified, avatar_url")
+    .select("id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url")
     .eq("id", authUser.id)
     .maybeSingle<{
       id: string;
@@ -262,6 +404,8 @@ async function buildAuthProfileFromToken(
       email?: string | null;
       role?: string | null;
       is_verified?: boolean | null;
+      email_verified?: boolean | null;
+      phone_verified?: boolean | null;
       avatar_url?: string | null;
     }>();
 
@@ -271,7 +415,9 @@ async function buildAuthProfileFromToken(
 
   const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
   const email = String(userRow?.email ?? authUser.email ?? "").trim();
-  const role = normalizeUserRole(userRow?.role ?? metadata.role);
+  const role = userRow?.role
+    ? normalizeUserRole(userRow.role, { allowAdmin: true })
+    : normalizeUserRole(metadata.role);
   const name =
     String(userRow?.full_name ?? metadata.full_name ?? metadata.name ?? "").trim() ||
     email.split("@")[0] ||
@@ -285,6 +431,8 @@ async function buildAuthProfileFromToken(
     email,
     role,
     isVerified: Boolean(userRow?.is_verified),
+    emailVerified: Boolean(userRow?.email_verified),
+    phoneVerified: Boolean(userRow?.phone_verified),
     avatar,
   };
 }
@@ -1434,7 +1582,824 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/verification/phone/send", async (req: Request, res: Response) => {
+  app.post("/api/transactions/upsert", async (req: Request, res: Response) => {
+    try {
+      const conversationId = String(req.body?.conversationId ?? "").trim();
+      const transactionKind = String(req.body?.transactionKind ?? "sale").trim().toLowerCase();
+      const closingModeRaw = String(req.body?.closingMode ?? "").trim().toLowerCase();
+      const status = String(req.body?.status ?? "").trim().toLowerCase();
+      const metadata = req.body?.metadata;
+
+      if (!conversationId) {
+        return res.status(400).json({ message: "conversationId is required." });
+      }
+
+      const transaction = await upsertTransaction({
+        conversationId,
+        transactionKind: transactionKind as "sale" | "rent" | "service" | "booking",
+        closingMode: closingModeRaw === "direct" || closingModeRaw === "agent_led" ? closingModeRaw : null,
+        status: status ? (status as TransactionStatus) : undefined,
+        buyerUserId: String(req.body?.buyerUserId ?? "").trim() || undefined,
+        sellerUserId: String(req.body?.sellerUserId ?? "").trim() || undefined,
+        agentUserId: String(req.body?.agentUserId ?? "").trim() || undefined,
+        providerUserId: String(req.body?.providerUserId ?? "").trim() || undefined,
+        currency: String(req.body?.currency ?? "").trim() || undefined,
+        principalAmount:
+          typeof req.body?.principalAmount === "number" && Number.isFinite(req.body.principalAmount)
+            ? req.body.principalAmount
+            : undefined,
+        inspectionFeeAmount:
+          typeof req.body?.inspectionFeeAmount === "number" &&
+          Number.isFinite(req.body.inspectionFeeAmount)
+            ? req.body.inspectionFeeAmount
+            : undefined,
+        inspectionFeeRefundable:
+          typeof req.body?.inspectionFeeRefundable === "boolean"
+            ? req.body.inspectionFeeRefundable
+            : undefined,
+        inspectionFeeStatus: String(req.body?.inspectionFeeStatus ?? "").trim() || undefined,
+        metadata:
+          metadata && typeof metadata === "object" && !Array.isArray(metadata)
+            ? (metadata as Record<string, unknown>)
+            : undefined,
+      });
+
+      return res.status(200).json(transaction);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to upsert transaction.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/transactions/by-conversation/:conversationId", async (req: Request, res: Response) => {
+    try {
+      const conversationId = String(req.params?.conversationId ?? "").trim();
+      if (!conversationId) {
+        return res.status(400).json({ message: "conversationId is required." });
+      }
+
+      const transaction = await getTransactionByConversationId(conversationId);
+      if (!transaction) {
+        return res.status(404).json({ message: "Transaction not found for this conversation." });
+      }
+      return res.status(200).json(transaction);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load transaction.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/transactions/:transactionId", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      if (!transactionId) {
+        return res.status(400).json({ message: "transactionId is required." });
+      }
+      const transaction = await getTransactionByIdPublic(transactionId);
+      return res.status(200).json(transaction);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load transaction.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/transactions/:transactionId/status", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      const toStatus = toTransactionStatus(req.body?.toStatus);
+      const actorUserId = String(req.body?.actorUserId ?? "").trim();
+      const reason = String(req.body?.reason ?? "").trim();
+      const metadata = req.body?.metadata;
+
+      if (!transactionId || !toStatus) {
+        return res.status(400).json({ message: "transactionId and toStatus are required." });
+      }
+
+      const updated = await transitionTransactionStatus({
+        transactionId,
+        toStatus,
+        actorUserId: actorUserId || undefined,
+        reason: reason || undefined,
+        metadata:
+          metadata && typeof metadata === "object" && !Array.isArray(metadata)
+            ? (metadata as Record<string, unknown>)
+            : undefined,
+      });
+
+      return res.status(200).json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update transaction status.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/transactions/:transactionId/actions", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      if (!transactionId) {
+        return res.status(400).json({ message: "transactionId is required." });
+      }
+      const actions = await listTransactionActions(transactionId);
+      return res.status(200).json(actions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load transaction actions.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/transactions/:transactionId/actions", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      const conversationId = String(req.body?.conversationId ?? "").trim();
+      const actionType = toChatActionType(req.body?.actionType);
+      const targetRole = normalizeActionRole(req.body?.targetRole);
+      const createdByUserId = String(req.body?.createdByUserId ?? "").trim();
+      const createdByName = String(req.body?.createdByName ?? "Action Creator").trim();
+      const createdByRole = String(req.body?.createdByRole ?? "").trim();
+      const content = String(req.body?.content ?? "").trim();
+
+      if (!transactionId || !conversationId || !actionType) {
+        return res.status(400).json({
+          message: "transactionId, conversationId, and actionType are required.",
+        });
+      }
+
+      const action = await createChatAction({
+        transactionId,
+        conversationId,
+        actionType,
+        targetRole,
+        payload:
+          req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+            ? (req.body.payload as Record<string, unknown>)
+            : undefined,
+        createdByUserId: createdByUserId || undefined,
+        expiresAt: String(req.body?.expiresAt ?? "").trim() || undefined,
+      });
+
+      const warnings: string[] = [];
+      if (createdByUserId) {
+        try {
+          await postTransactionActionMessage({
+            conversationId,
+            senderId: createdByUserId,
+            senderName: createdByName || "Action Creator",
+            senderRole: createdByRole || undefined,
+            action,
+            content: content || `Action required: ${actionType.replace(/_/g, " ")}`,
+          });
+        } catch (error) {
+          warnings.push(
+            error instanceof Error
+              ? error.message
+              : "Action created but chat-card message delivery failed.",
+          );
+        }
+      }
+
+      return res.status(201).json({ action, warnings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create action.";
+      if (message.startsWith("FORBIDDEN:")) {
+        return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+      }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/chat-actions/:actionId/resolve", async (req: Request, res: Response) => {
+    try {
+      const actionId = String(req.params?.actionId ?? "").trim();
+      const actorUserId = String(req.body?.actorUserId ?? "").trim();
+      const actorName = String(req.body?.actorName ?? "Action Resolver").trim();
+      const actorRole = normalizeActionRole(req.body?.actorRole);
+      const decision = String(req.body?.decision ?? "").trim().toLowerCase();
+      const resolutionPayload = req.body?.payload;
+      if (!actionId || !actorUserId || (decision !== "accept" && decision !== "decline" && decision !== "submit")) {
+        return res.status(400).json({
+          message: "actionId, actorUserId, and decision (accept/decline/submit) are required.",
+        });
+      }
+
+      const warnings: string[] = [];
+      const resolved = await resolveChatAction({
+        actionId,
+        actorUserId,
+        actorRole,
+        decision: decision as "accept" | "decline" | "submit",
+        payload:
+          resolutionPayload && typeof resolutionPayload === "object" && !Array.isArray(resolutionPayload)
+            ? (resolutionPayload as Record<string, unknown>)
+            : undefined,
+      });
+      let transaction = resolved.transaction;
+      const action = resolved.action;
+
+      const tryStep = async (step: () => Promise<void>) => {
+        try {
+          await step();
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : "Automation step failed.");
+        }
+      };
+
+      if (action.status === "accepted" || action.status === "submitted") {
+        if (action.actionType === "escrow_payment_request" && action.status === "accepted") {
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "escrow_requested",
+              actorUserId,
+              reason: "Escrow payment request accepted.",
+            });
+          });
+
+          await tryStep(async () => {
+            await sendConversationMessage({
+              conversationId: transaction.conversationId,
+              senderId: actorUserId,
+              senderName: actorName || "Action Resolver",
+              senderRole: actorRole,
+              messageType: "text",
+              content: buildEscrowInstructionMessage(transaction),
+            });
+          });
+
+          await tryStep(async () => {
+            const uploadAction = await createChatAction({
+              transactionId: transaction.id,
+              conversationId: transaction.conversationId,
+              actionType: "upload_payment_proof",
+              targetRole:
+                transaction.transactionKind === "rent"
+                  ? "renter"
+                  : "buyer",
+              payload: {
+                requiredDocuments: ["payment_receipt", "transfer_reference"],
+              },
+              createdByUserId: actorUserId,
+            });
+            await postTransactionActionMessage({
+              conversationId: transaction.conversationId,
+              senderId: actorUserId,
+              senderName: actorName || "Action Resolver",
+              senderRole: actorRole,
+              action: uploadAction,
+              content: "Upload proof of payment to continue.",
+            });
+          });
+        }
+
+        if (action.actionType === "upload_payment_proof") {
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus:
+                transaction.transactionKind === "service"
+                  ? "escrow_paid_pending_verification"
+                  : "escrow_funded_pending_verification",
+              actorUserId,
+              reason: "Payment proof submitted.",
+            });
+          });
+        }
+
+        if (action.actionType === "schedule_meeting_request" && action.status === "accepted") {
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "closing_scheduled",
+              actorUserId,
+              reason: "Closing meeting accepted.",
+            });
+          });
+        }
+
+        if (action.actionType === "upload_signed_closing_contract") {
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "closing_pending_confirmation",
+              actorUserId,
+              reason: "Signed contract uploaded.",
+            });
+          });
+        }
+
+        if (action.actionType === "mark_delivered") {
+          const acceptanceDueAt = resolveDirectAcceptanceDueAtIso();
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "delivered",
+              actorUserId,
+              reason: "Delivery marked complete.",
+            });
+          });
+
+          await tryStep(async () => {
+            await setTransactionAcceptanceDueAt(transaction.id, acceptanceDueAt);
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "acceptance_pending",
+              actorUserId,
+              reason: "Waiting for buyer/renter acceptance.",
+              metadata: { acceptanceDueAt },
+            });
+          });
+
+          await tryStep(async () => {
+            const acceptAction = await createChatAction({
+              transactionId: transaction.id,
+              conversationId: transaction.conversationId,
+              actionType: "accept_delivery",
+              targetRole: transaction.transactionKind === "rent" ? "renter" : "buyer",
+              payload: {
+                buttons: ["accept", "dispute"],
+                acceptanceDueAt,
+              },
+              createdByUserId: actorUserId,
+              expiresAt: acceptanceDueAt,
+            });
+
+            await postTransactionActionMessage({
+              conversationId: transaction.conversationId,
+              senderId: actorUserId,
+              senderName: actorName || "Action Resolver",
+              senderRole: actorRole,
+              action: acceptAction,
+              content: "Delivery marked. Please accept delivery or dispute.",
+            });
+          });
+        }
+
+        if (action.actionType === "accept_delivery") {
+          if (action.status === "accepted") {
+            await tryStep(async () => {
+              transaction = await transitionTransactionStatus({
+                transactionId: transaction.id,
+                toStatus: "completed",
+                actorUserId,
+                reason: "Buyer accepted delivery.",
+              });
+              await setTransactionAcceptanceDueAt(transaction.id, null);
+            });
+          } else {
+            await tryStep(async () => {
+              await openTransactionDispute({
+                transactionId: transaction.id,
+                conversationId: transaction.conversationId,
+                openedByUserId: actorUserId,
+                reason: "Delivery disputed by buyer/renter.",
+                metadata: {
+                  sourceActionId: action.id,
+                  sourceActionType: action.actionType,
+                  sourceActionStatus: action.status,
+                },
+              });
+            });
+          }
+        }
+
+        if (action.actionType === "service_quote" && action.status === "accepted") {
+          await tryStep(async () => {
+            transaction = await transitionTransactionStatus({
+              transactionId: transaction.id,
+              toStatus: "quote_accepted",
+              actorUserId,
+              reason: "Service quote accepted.",
+            });
+          });
+        }
+      } else if (action.actionType === "accept_delivery" && action.status === "declined") {
+        await tryStep(async () => {
+          await openTransactionDispute({
+            transactionId: transaction.id,
+            conversationId: transaction.conversationId,
+            openedByUserId: actorUserId,
+            reason: "Delivery disputed by buyer/renter.",
+            metadata: {
+              sourceActionId: action.id,
+              sourceActionType: action.actionType,
+              sourceActionStatus: action.status,
+            },
+          });
+        });
+      }
+
+      return res.status(200).json({ action, transaction, warnings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to resolve action.";
+      if (message.startsWith("FORBIDDEN:")) {
+        return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+      }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/transactions/:transactionId/payout-claim", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      const idempotencyKey = String(req.body?.idempotencyKey ?? "").trim();
+      const amount = Number(req.body?.amount);
+      const ledgerType = String(req.body?.ledgerType ?? "payout").trim().toLowerCase();
+      if (!transactionId || !idempotencyKey || !Number.isFinite(amount)) {
+        return res.status(400).json({
+          message: "transactionId, idempotencyKey, and numeric amount are required.",
+        });
+      }
+
+      const claim = await claimPayoutLedgerEntry({
+        transactionId,
+        idempotencyKey,
+        amount,
+        ledgerType: ledgerType as "payout" | "refund" | "commission",
+        currency: String(req.body?.currency ?? "").trim() || undefined,
+        recipientUserId: String(req.body?.recipientUserId ?? "").trim() || undefined,
+        reference: String(req.body?.reference ?? "").trim() || undefined,
+        metadata:
+          req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
+            ? (req.body.metadata as Record<string, unknown>)
+            : undefined,
+      });
+
+      return res.status(200).json(claim);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to claim payout ledger entry.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/transactions/:transactionId/ratings", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      const raterUserId = String(req.body?.raterUserId ?? "").trim();
+      const stars = Number(req.body?.stars);
+      if (!transactionId || !raterUserId || !Number.isFinite(stars)) {
+        return res.status(400).json({
+          message: "transactionId, raterUserId, and numeric stars are required.",
+        });
+      }
+
+      const rating = await upsertTransactionRating({
+        transactionId,
+        raterUserId,
+        stars,
+        review: String(req.body?.review ?? "").trim() || undefined,
+        ratedUserId: String(req.body?.ratedUserId ?? "").trim() || undefined,
+      });
+      return res.status(200).json(rating);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to submit transaction rating.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/disputes/open", async (req: Request, res: Response) => {
+    try {
+      const actorRole = normalizeActionRole(req.query?.actorRole);
+      if (!isPrivilegedActorRole(actorRole)) {
+        return res.status(403).json({ message: "Only admin/support can view all open disputes." });
+      }
+
+      const limit = Number(req.query?.limit);
+      const disputes = await listOpenDisputes({
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(disputes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load open disputes.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/transactions/:transactionId/disputes", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      if (!transactionId) {
+        return res.status(400).json({ message: "transactionId is required." });
+      }
+
+      const statusRaw = String(req.query?.status ?? "all").trim().toLowerCase();
+      const limit = Number(req.query?.limit);
+      const disputes = await listTransactionDisputes(transactionId, {
+        status:
+          statusRaw === "open" ||
+          statusRaw === "resolved" ||
+          statusRaw === "rejected" ||
+          statusRaw === "cancelled"
+            ? (statusRaw as "open" | "resolved" | "rejected" | "cancelled")
+            : "all",
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(disputes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load disputes.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/transactions/:transactionId/disputes", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      const reason = String(req.body?.reason ?? "").trim();
+      const details = String(req.body?.details ?? "").trim() || undefined;
+      const openedByUserId = String(req.body?.openedByUserId ?? "").trim() || undefined;
+      const openedByName = String(req.body?.openedByName ?? "System").trim();
+      const openedByRole = normalizeActionRole(req.body?.openedByRole);
+      let conversationId = String(req.body?.conversationId ?? "").trim();
+
+      if (!transactionId || !reason) {
+        return res.status(400).json({
+          message: "transactionId and reason are required.",
+        });
+      }
+
+      if (!conversationId) {
+        const transaction = await getTransactionByIdPublic(transactionId);
+        conversationId = transaction.conversationId;
+      }
+
+      const dispute = await openTransactionDispute({
+        transactionId,
+        conversationId,
+        openedByUserId,
+        againstUserId: String(req.body?.againstUserId ?? "").trim() || undefined,
+        reason,
+        details,
+        metadata:
+          req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
+            ? (req.body.metadata as Record<string, unknown>)
+            : undefined,
+      });
+
+      const warnings: string[] = [];
+      if (openedByUserId) {
+        try {
+          await sendConversationMessage({
+            conversationId,
+            senderId: openedByUserId,
+            senderName: openedByName,
+            senderRole: openedByRole,
+            messageType: "issue_card",
+            content: "Dispute opened",
+            metadata: {
+              issueCard: {
+                title: "DISPUTE OPENED",
+                message: reason,
+                status: "open",
+              },
+              dispute: {
+                id: dispute.id,
+                reason: dispute.reason,
+                details: dispute.details,
+              },
+            },
+          });
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : "Dispute opened, but chat notification failed.");
+        }
+      }
+
+      return res.status(201).json({ dispute, warnings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to open dispute.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/disputes/:disputeId/resolve", async (req: Request, res: Response) => {
+    try {
+      const disputeId = String(req.params?.disputeId ?? "").trim();
+      const actorRole = normalizeActionRole(req.body?.resolvedByRole);
+      if (!isPrivilegedActorRole(actorRole)) {
+        return res.status(403).json({ message: "Only admin/support can resolve disputes." });
+      }
+
+      const nextStatusRaw = String(req.body?.status ?? "resolved").trim().toLowerCase();
+      const nextStatus =
+        nextStatusRaw === "rejected" || nextStatusRaw === "cancelled" ? nextStatusRaw : "resolved";
+
+      const resolved = await resolveTransactionDispute({
+        disputeId,
+        status: nextStatus,
+        resolvedByUserId: String(req.body?.resolvedByUserId ?? "").trim() || undefined,
+        resolution: String(req.body?.resolution ?? "").trim() || undefined,
+        resolutionTargetStatus: String(req.body?.resolutionTargetStatus ?? "").trim().toLowerCase() as
+          | TransactionStatus
+          | undefined,
+        metadata:
+          req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
+            ? (req.body.metadata as Record<string, unknown>)
+            : undefined,
+        unfreezeEscrow:
+          typeof req.body?.unfreezeEscrow === "boolean" ? req.body.unfreezeEscrow : true,
+      });
+
+      const warnings: string[] = [];
+      try {
+        await sendConversationMessage({
+          conversationId: resolved.conversationId,
+          senderId: String(req.body?.resolvedByUserId ?? "").trim() || randomUUID(),
+          senderName: String(req.body?.resolvedByName ?? "Justice City Support").trim(),
+          senderRole: actorRole,
+          messageType: "issue_card",
+          content: "Dispute resolved",
+          metadata: {
+            issueCard: {
+              title: "DISPUTE UPDATE",
+              message: resolved.resolution ?? `Dispute ${resolved.status}.`,
+              status: resolved.status,
+            },
+            dispute: {
+              id: resolved.id,
+              status: resolved.status,
+            },
+          },
+        });
+      } catch (error) {
+        warnings.push(
+          error instanceof Error
+            ? error.message
+            : "Dispute resolved, but chat notification failed.",
+        );
+      }
+
+      return res.status(200).json({ dispute: resolved, warnings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to resolve dispute.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/service-pdf-jobs", async (req: Request, res: Response) => {
+    try {
+      const conversationId = String(req.query?.conversationId ?? "").trim() || undefined;
+      const statusRaw = String(req.query?.status ?? "all").trim().toLowerCase();
+      const limit = Number(req.query?.limit);
+      const jobs = await listServicePdfJobs({
+        conversationId,
+        status:
+          statusRaw === "queued" ||
+          statusRaw === "processing" ||
+          statusRaw === "completed" ||
+          statusRaw === "failed"
+            ? (statusRaw as "queued" | "processing" | "completed" | "failed")
+            : "all",
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(jobs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to list service PDF jobs.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/service-pdf-jobs", async (req: Request, res: Response) => {
+    try {
+      const actorRole = normalizeActionRole(req.body?.actorRole);
+      if (!isPrivilegedActorRole(actorRole) && actorRole !== "agent") {
+        return res.status(403).json({ message: "Only admin/support/agent can queue service PDF jobs." });
+      }
+
+      let conversationId = String(req.body?.conversationId ?? "").trim();
+      const transactionId = String(req.body?.transactionId ?? "").trim() || undefined;
+      if (!conversationId && transactionId) {
+        const transaction = await getTransactionByIdPublic(transactionId);
+        conversationId = transaction.conversationId;
+      }
+      if (!conversationId) {
+        return res.status(400).json({ message: "conversationId or transactionId is required." });
+      }
+
+      const job = await enqueueServicePdfJob({
+        conversationId,
+        serviceRequestId: String(req.body?.serviceRequestId ?? "").trim() || undefined,
+        transactionId,
+        createdByUserId: String(req.body?.createdByUserId ?? "").trim() || undefined,
+        outputBucket: String(req.body?.outputBucket ?? "").trim() || undefined,
+        outputPath: String(req.body?.outputPath ?? "").trim() || undefined,
+        maxAttempts:
+          typeof req.body?.maxAttempts === "number" && Number.isFinite(req.body.maxAttempts)
+            ? req.body.maxAttempts
+            : undefined,
+        payload:
+          req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+            ? (req.body.payload as Record<string, unknown>)
+            : undefined,
+      });
+
+      return res.status(201).json(job);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to enqueue service PDF job.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/service-pdf-jobs/process-next", async (req: Request, res: Response) => {
+    try {
+      const actorRole = normalizeActionRole(req.body?.actorRole);
+      if (!isPrivilegedActorRole(actorRole)) {
+        return res.status(403).json({ message: "Only admin/support can process queued jobs manually." });
+      }
+      const job = await processNextServicePdfJob();
+      return res.status(200).json({ job });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to process next service PDF job.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/provider-links/by-conversation/:conversationId", async (req: Request, res: Response) => {
+    try {
+      const conversationId = String(req.params?.conversationId ?? "").trim();
+      if (!conversationId) {
+        return res.status(400).json({ message: "conversationId is required." });
+      }
+
+      const limit = Number(req.query?.limit);
+      const links = await listProviderLinksByConversation(conversationId, {
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(links);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to list provider links.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/provider-links", async (req: Request, res: Response) => {
+    try {
+      const actorRole = normalizeActionRole(req.body?.createdByRole);
+      if (!isPrivilegedActorRole(actorRole) && actorRole !== "agent") {
+        return res.status(403).json({ message: "Only admin/support/agent can create provider links." });
+      }
+
+      const conversationId = String(req.body?.conversationId ?? "").trim();
+      if (!conversationId) {
+        return res.status(400).json({ message: "conversationId is required." });
+      }
+
+      const created = await createServiceProviderLink({
+        conversationId,
+        serviceRequestId: String(req.body?.serviceRequestId ?? "").trim() || undefined,
+        providerUserId: String(req.body?.providerUserId ?? "").trim() || undefined,
+        expiresAt: String(req.body?.expiresAt ?? "").trim() || undefined,
+        payload:
+          req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+            ? (req.body.payload as Record<string, unknown>)
+            : undefined,
+        createdByUserId: String(req.body?.createdByUserId ?? "").trim() || undefined,
+      });
+
+      const baseUrl = resolvePublicAppBaseUrl(req);
+      const packageUrl = `${baseUrl}/provider-package/${encodeURIComponent(created.token)}`;
+      return res.status(201).json({
+        link: created.link,
+        token: created.token,
+        packageUrl,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create provider package link.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/provider-links/:linkId/revoke", async (req: Request, res: Response) => {
+    try {
+      const actorRole = normalizeActionRole(req.body?.actorRole);
+      if (!isPrivilegedActorRole(actorRole)) {
+        return res.status(403).json({ message: "Only admin/support can revoke provider links." });
+      }
+      const linkId = String(req.params?.linkId ?? "").trim();
+      if (!linkId) {
+        return res.status(400).json({ message: "linkId is required." });
+      }
+
+      const link = await revokeProviderLink(linkId);
+      return res.status(200).json(link);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to revoke provider link.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/provider-package/:token", async (req: Request, res: Response) => {
+    try {
+      const token = String(req.params?.token ?? "").trim();
+      if (!token) {
+        return res.status(400).json({ message: "token is required." });
+      }
+
+      const providerPackage = await resolveProviderPackageByToken(token);
+      return res.status(200).json(providerPackage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load provider package.";
+      return res.status(404).json({ message });
+    }
+  });
+
+  app.post(["/api/verification/phone/send", "/api/phone-otp/send"], async (req: Request, res: Response) => {
     try {
       const phone = normalizePhoneNumber(req.body?.phone);
       if (!phone) {
@@ -1476,7 +2441,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/verification/phone/check", async (req: Request, res: Response) => {
+  app.post(["/api/verification/phone/check", "/api/phone-otp/verify"], async (req: Request, res: Response) => {
     try {
       const phone = normalizePhoneNumber(req.body?.phone);
       const code = String(req.body?.code ?? "").trim();
@@ -1533,9 +2498,17 @@ export async function registerRoutes(
       await markPhoneVerifySucceeded(phone);
 
       if (approved && userId) {
+        await ensureUserExistsForOtp(userId, {
+          phoneVerified: true,
+          phone,
+        });
+
         const client = createSupabaseServiceClient();
         if (client) {
-          const { error } = await client.from(USERS_TABLE).update({ phone }).eq("id", userId);
+          const { error } = await client
+            .from(USERS_TABLE)
+            .update({ phone, phone_verified: true })
+            .eq("id", userId);
           if (error && !isMissingTableOrColumnError(error)) {
             throw new Error(`Phone verification succeeded, but failed to persist phone number: ${error.message}`);
           }
@@ -1555,7 +2528,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/verification/email/send", async (req: Request, res: Response) => {
+  app.post(["/api/verification/email/send", "/api/email-otp/send"], async (req: Request, res: Response) => {
     try {
       const email = normalizeEmail(req.body?.email);
       if (!email) {
@@ -1599,7 +2572,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/verification/email/check", async (req: Request, res: Response) => {
+  app.post(["/api/verification/email/check", "/api/email-otp/verify"], async (req: Request, res: Response) => {
     try {
       const email = normalizeEmail(req.body?.email);
       const code = String(req.body?.code ?? "").trim();
@@ -1655,9 +2628,17 @@ export async function registerRoutes(
       await markPhoneVerifySucceeded(guardKey);
 
       if (approved && userId) {
+        await ensureUserExistsForOtp(userId, {
+          emailVerified: true,
+          email,
+        });
+
         const client = createSupabaseServiceClient();
         if (client) {
-          const { error } = await client.from(USERS_TABLE).update({ email }).eq("id", userId);
+          const { error } = await client
+            .from(USERS_TABLE)
+            .update({ email, email_verified: true })
+            .eq("id", userId);
           if (error && !isMissingTableOrColumnError(error)) {
             throw new Error(
               `Email verification succeeded, but failed to persist email on user profile: ${error.message}`,

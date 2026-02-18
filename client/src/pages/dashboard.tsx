@@ -55,8 +55,10 @@ import ModernAgentDashboardView from "@/components/agent-dashboard-view";
 import { createAgentListing } from "@/lib/agent-listings";
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, isLoading } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const [gateToastShown, setGateToastShown] = useState(false);
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [isCreateListingOpen, setIsCreateListingOpen] = useState(false);
   const [isSubmittingListing, setIsSubmittingListing] = useState(false);
@@ -68,6 +70,33 @@ export default function Dashboard() {
     location: "",
     description: "",
   });
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (!user) {
+      setLocation("/auth?mode=login");
+      return;
+    }
+    if (!user.emailVerified) {
+      if (!gateToastShown) {
+        toast({
+          title: "Email verification required",
+          description: "Please verify your email first to access your dashboard.",
+          variant: "destructive",
+        });
+        setGateToastShown(true);
+      }
+      setLocation("/verify");
+    }
+  }, [gateToastShown, isLoading, setLocation, toast, user]);
+
+  if (isLoading || !user || !user.emailVerified) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center text-sm text-slate-500">
+        Preparing your dashboard...
+      </div>
+    );
+  }
 
   useEffect(() => {
     const loadSaved = () => {

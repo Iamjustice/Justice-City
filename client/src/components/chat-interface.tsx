@@ -3,9 +3,23 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, ShieldCheck, MoreVertical, Paperclip, X, FileText, ImageIcon, ExternalLink } from "lucide-react";
+import {
+  AlertTriangle,
+  ExternalLink,
+  FileText,
+  FileUp,
+  ImageIcon,
+  Link2,
+  Loader2,
+  MoreVertical,
+  Paperclip,
+  Send,
+  ShieldCheck,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { useToast } from "@/hooks/use-toast";
 import {
   fetchConversationMessages,
   sendConversationMessage,
@@ -13,6 +27,18 @@ import {
   upsertConversation,
   type ChatMessage,
 } from "@/lib/chat";
+import {
+  createProviderLink,
+  getTransactionByConversation,
+  listServicePdfJobsByConversation,
+  openDispute,
+  queueServicePdfJob,
+  resolveTransactionAction,
+  upsertTransactionForConversation,
+  type ServicePdfJob,
+  type TransactionAction,
+  type TransactionSummary,
+} from "@/lib/transaction-automation";
 
 const SAFETY_SYSTEM_MESSAGE =
   "This chat is monitored by Justice City for your safety. Do not share financial details off-platform.";
@@ -95,10 +121,78 @@ function parseIssueCard(message: ChatMessage): {
   return { title, problemTag, status, detail };
 }
 
+function parseActionCard(message: ChatMessage): TransactionAction | null {
+  const metadata =
+    message.metadata && typeof message.metadata === "object"
+      ? (message.metadata as Record<string, unknown>)
+      : undefined;
+  const actionCard =
+    metadata?.actionCard && typeof metadata.actionCard === "object"
+      ? (metadata.actionCard as Record<string, unknown>)
+      : undefined;
+  if (!actionCard) return null;
+
+  const id = String(actionCard.id ?? "").trim();
+  const transactionId = String(actionCard.transactionId ?? "").trim();
+  const conversationId = String(actionCard.conversationId ?? "").trim();
+  const actionType = String(actionCard.actionType ?? "").trim().toLowerCase();
+  if (!id || !transactionId || !actionType) return null;
+
+  return {
+    id,
+    transactionId,
+    conversationId,
+    actionType,
+    targetRole: String(actionCard.targetRole ?? "buyer").trim().toLowerCase(),
+    status: String(actionCard.status ?? "pending").trim().toLowerCase() as TransactionAction["status"],
+    payload:
+      actionCard.payload && typeof actionCard.payload === "object"
+        ? (actionCard.payload as Record<string, unknown>)
+        : {},
+    expiresAt: actionCard.expiresAt ? String(actionCard.expiresAt) : null,
+  };
+}
+
+function normalizeUserRole(rawRole: unknown): string {
+  const role = String(rawRole ?? "").trim().toLowerCase();
+  if (role === "admin" || role === "support") return role;
+  if (role === "agent") return role;
+  if (role === "seller") return role;
+  if (role === "owner") return role;
+  if (role === "renter") return role;
+  return "buyer";
+}
+
+function canResolveAction(action: TransactionAction, userRoleRaw: unknown): boolean {
+  const userRole = normalizeUserRole(userRoleRaw);
+  if (action.status !== "pending") return false;
+  if (userRole === "admin" || userRole === "support") return true;
+  return action.targetRole === userRole;
+}
+
+function resolveActionPrimaryLabel(actionType: string): string {
+  if (actionType === "upload_payment_proof") return "Submit";
+  if (actionType === "upload_signed_closing_contract") return "Submit";
+  if (actionType === "upload_service_deliverable") return "Submit";
+  if (actionType === "accept_delivery") return "Accept";
+  return "Accept";
+}
+
+function resolveActionSecondaryLabel(actionType: string): string {
+  if (actionType === "accept_delivery") return "Dispute";
+  return "Decline";
+}
+
 function isImageAttachment(mimeType?: string): boolean {
   return String(mimeType ?? "")
     .toLowerCase()
     .startsWith("image/");
+}
+
+function isUuid(value: string | undefined): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value ?? "").trim(),
+  );
 }
 
 export function ChatInterface({
@@ -114,6 +208,7 @@ export function ChatInterface({
   serviceCode,
 }: ChatInterfaceProps) {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -124,6 +219,14 @@ export function ChatInterface({
   const [isSending, setIsSending] = useState(false);
   const [isLocalFallback, setIsLocalFallback] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [transaction, setTransaction] = useState<TransactionSummary | null>(null);
+  const [isResolvingActionId, setIsResolvingActionId] = useState<string | null>(null);
+  const [isQueueingPdf, setIsQueueingPdf] = useState(false);
+  const [latestPdfJob, setLatestPdfJob] = useState<ServicePdfJob | null>(null);
+  const [providerUserId, setProviderUserId] = useState("");
+  const [providerLinkUrl, setProviderLinkUrl] = useState("");
+  const [isCreatingProviderLink, setIsCreatingProviderLink] = useState(false);
+  const [isOpeningDispute, setIsOpeningDispute] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const initialRecipientMessage =
@@ -227,6 +330,62 @@ export function ChatInterface({
     serviceCode,
   ]);
 
+  const refreshMessages = async (targetConversationId: string, viewerId: string): Promise<void> => {
+    const history = await fetchConversationMessages(targetConversationId, viewerId);
+    setMessages(Array.isArray(history) ? history : []);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    const loadAutomationState = async () => {
+      if (!conversationId || isLocalFallback) {
+        setTransaction(null);
+        setLatestPdfJob(null);
+        return;
+      }
+
+      try {
+        let resolvedTransaction = await getTransactionByConversation(conversationId);
+        if (
+          !resolvedTransaction &&
+          conversationScope === "service" &&
+          user?.id
+        ) {
+          resolvedTransaction = await upsertTransactionForConversation({
+            conversationId,
+            transactionKind: "service",
+            status: "service_intake_pending",
+            buyerUserId: user.id,
+            providerUserId: isUuid(recipient.id) ? recipient.id : undefined,
+          });
+        }
+
+        if (!active) return;
+        setTransaction(resolvedTransaction);
+      } catch {
+        if (!active) return;
+        setTransaction(null);
+      }
+
+      if (conversationScope === "service") {
+        try {
+          const jobs = await listServicePdfJobsByConversation(conversationId);
+          if (!active) return;
+          setLatestPdfJob(jobs[0] ?? null);
+        } catch {
+          if (!active) return;
+          setLatestPdfJob(null);
+        }
+      }
+    };
+
+    void loadAutomationState();
+    return () => {
+      active = false;
+    };
+  }, [conversationId, conversationScope, isLocalFallback, recipient.id, user?.id]);
+
   const handleSend = async () => {
     const content = newMessage.trim();
     if ((!content && pendingFiles.length === 0) || isSending) return;
@@ -314,6 +473,169 @@ export function ChatInterface({
     }
   };
 
+  const handleResolveAction = async (
+    action: TransactionAction,
+    decision: "accept" | "decline" | "submit",
+  ) => {
+    if (!user?.id) {
+      toast({
+        title: "Sign in required",
+        description: "Please sign in to resolve this action card.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsResolvingActionId(action.id);
+    setLoadError(null);
+    try {
+      const result = await resolveTransactionAction({
+        actionId: action.id,
+        actorUserId: user.id,
+        actorName: user.name,
+        actorRole: user.role ?? undefined,
+        decision,
+      });
+      setTransaction(result.transaction);
+      if (conversationId) {
+        await refreshMessages(conversationId, resolvedSenderId || resolvedRequester.id);
+      }
+      if (result.warnings && result.warnings.length > 0) {
+        toast({
+          title: "Action resolved with warnings",
+          description: result.warnings[0],
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to resolve action.";
+      setLoadError(message);
+      toast({
+        title: "Action failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsResolvingActionId(null);
+    }
+  };
+
+  const handleQueueServicePdf = async () => {
+    if (!conversationId || !user?.id) return;
+
+    setIsQueueingPdf(true);
+    setLoadError(null);
+    try {
+      const job = await queueServicePdfJob({
+        conversationId,
+        transactionId: transaction?.id,
+        createdByUserId: user.id,
+        actorRole: user.role ?? undefined,
+      });
+      setLatestPdfJob(job);
+      toast({
+        title: "PDF job queued",
+        description: "The service transcript PDF is queued for background generation.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to queue PDF job.";
+      setLoadError(message);
+      toast({
+        title: "Queue failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsQueueingPdf(false);
+    }
+  };
+
+  const handleCreateProviderLink = async () => {
+    if (!conversationId || !user?.id) return;
+
+    setIsCreatingProviderLink(true);
+    setLoadError(null);
+    try {
+      const created = await createProviderLink({
+        conversationId,
+        providerUserId: providerUserId.trim() || undefined,
+        createdByUserId: user.id,
+        createdByRole: user.role ?? undefined,
+        payload: {
+          source: "chat_interface",
+          conversationScope,
+          propertyTitle,
+        },
+      });
+      setProviderLinkUrl(created.packageUrl);
+      toast({
+        title: "Provider link created",
+        description: "Secure package link is ready to share with the assigned provider.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create provider link.";
+      setLoadError(message);
+      toast({
+        title: "Provider link failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreatingProviderLink(false);
+    }
+  };
+
+  const handleOpenDispute = async () => {
+    if (!transaction?.id || !conversationId || !user?.id) return;
+
+    const reason = window.prompt("Enter dispute reason:");
+    if (!reason || !reason.trim()) return;
+    const details = window.prompt("Add more details (optional):") ?? "";
+
+    setIsOpeningDispute(true);
+    setLoadError(null);
+    try {
+      await openDispute({
+        transactionId: transaction.id,
+        conversationId,
+        reason: reason.trim(),
+        details: details.trim() || undefined,
+        openedByUserId: user.id,
+        openedByName: user.name,
+        openedByRole: user.role ?? undefined,
+      });
+      const refreshed = await getTransactionByConversation(conversationId);
+      setTransaction(refreshed);
+      await refreshMessages(conversationId, resolvedSenderId || resolvedRequester.id);
+      toast({
+        title: "Dispute opened",
+        description: "Escrow is frozen pending admin resolution.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to open dispute.";
+      setLoadError(message);
+      toast({
+        title: "Dispute failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsOpeningDispute(false);
+    }
+  };
+
+  const canUseServiceAutomationTools =
+    conversationScope === "service" &&
+    Boolean(conversationId) &&
+    !isLocalFallback &&
+    ["admin", "support", "agent"].includes(normalizeUserRole(user?.role));
+
+  const canOpenDispute =
+    Boolean(transaction?.id) &&
+    !isLocalFallback &&
+    transaction?.status !== "completed" &&
+    transaction?.status !== "closed" &&
+    transaction?.status !== "cancelled";
+
   return (
     <div className="flex flex-col h-[500px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
       <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
@@ -334,9 +656,55 @@ export function ChatInterface({
             <p className="text-xs text-slate-500 truncate max-w-[220px]">Re: {propertyTitle}</p>
           </div>
         </div>
-        <Button variant="ghost" size="icon">
-          <MoreVertical className="w-4 h-4 text-slate-400" />
-        </Button>
+        <div className="flex items-center gap-2">
+          {canUseServiceAutomationTools && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => void handleQueueServicePdf()}
+                disabled={isQueueingPdf}
+              >
+                {isQueueingPdf ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <FileUp className="mr-1 h-3.5 w-3.5" />}
+                Queue PDF
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => void handleCreateProviderLink()}
+                disabled={isCreatingProviderLink}
+              >
+                {isCreatingProviderLink ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Link2 className="mr-1 h-3.5 w-3.5" />
+                )}
+                Provider Link
+              </Button>
+            </>
+          )}
+          {canOpenDispute && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 border-red-200 text-red-700 hover:bg-red-50"
+              onClick={() => void handleOpenDispute()}
+              disabled={isOpeningDispute}
+            >
+              {isOpeningDispute ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <AlertTriangle className="mr-1 h-3.5 w-3.5" />
+              )}
+              Dispute
+            </Button>
+          )}
+          <Button variant="ghost" size="icon">
+            <MoreVertical className="w-4 h-4 text-slate-400" />
+          </Button>
+        </div>
       </div>
 
       <ScrollArea className="flex-1 p-4 bg-slate-50/30">
@@ -363,7 +731,11 @@ export function ChatInterface({
                 ) : (
                   (() => {
                     const issueCard = parseIssueCard(msg);
+                    const actionCard = parseActionCard(msg);
                     const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+                    const canResolveCurrentAction =
+                      actionCard && canResolveAction(actionCard, user?.role);
+                    const actionPending = actionCard?.status === "pending";
 
                     return (
                       <div
@@ -401,6 +773,58 @@ export function ChatInterface({
                               </div>
                             )}
                             <p className="mt-2 text-sm">{issueCard.detail}</p>
+                            {actionCard && (
+                              <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] opacity-90">
+                                  <span className="rounded-full border px-2 py-0.5">
+                                    Action: {actionCard.actionType.replace(/_/g, " ")}
+                                  </span>
+                                  <span className="rounded-full border px-2 py-0.5">
+                                    Target: {actionCard.targetRole}
+                                  </span>
+                                  {actionCard.expiresAt && (
+                                    <span className="rounded-full border px-2 py-0.5">
+                                      Expires: {new Date(actionCard.expiresAt).toLocaleString()}
+                                    </span>
+                                  )}
+                                </div>
+                                {canResolveCurrentAction && actionPending && (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                      size="sm"
+                                      className="h-7"
+                                      disabled={isResolvingActionId === actionCard.id}
+                                      onClick={() =>
+                                        void handleResolveAction(
+                                          actionCard,
+                                          actionCard.actionType === "upload_payment_proof" ||
+                                            actionCard.actionType === "upload_signed_closing_contract" ||
+                                            actionCard.actionType === "upload_service_deliverable"
+                                            ? "submit"
+                                            : "accept",
+                                        )
+                                      }
+                                    >
+                                      {isResolvingActionId === actionCard.id ? (
+                                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                      ) : null}
+                                      {resolveActionPrimaryLabel(actionCard.actionType)}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7"
+                                      disabled={isResolvingActionId === actionCard.id}
+                                      onClick={() =>
+                                        void handleResolveAction(actionCard, "decline")
+                                      }
+                                    >
+                                      {resolveActionSecondaryLabel(actionCard.actionType)}
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <p>{msg.content}</p>
@@ -528,6 +952,53 @@ export function ChatInterface({
             event.currentTarget.value = "";
           }}
         />
+        {canUseServiceAutomationTools && (
+          <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <Input
+                placeholder="Provider user UUID (optional)"
+                value={providerUserId}
+                onChange={(event) => setProviderUserId(event.target.value)}
+                className="h-8 bg-white"
+              />
+              {providerLinkUrl && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(providerLinkUrl);
+                      toast({ title: "Copied", description: "Provider package link copied." });
+                    } catch {
+                      toast({
+                        title: "Copy failed",
+                        description: "Copy the provider link manually.",
+                        variant: "destructive",
+                      });
+                    }
+                  }}
+                >
+                  Copy Link
+                </Button>
+              )}
+            </div>
+            {providerLinkUrl && (
+              <p className="truncate text-xs text-blue-700">
+                Provider package:{" "}
+                <a href={providerLinkUrl} target="_blank" rel="noreferrer" className="underline">
+                  {providerLinkUrl}
+                </a>
+              </p>
+            )}
+            {latestPdfJob && (
+              <p className="text-xs text-slate-600">
+                PDF job: <span className="font-medium">{latestPdfJob.status}</span>
+                {latestPdfJob.outputPath ? `  •  ${latestPdfJob.outputPath}` : ""}
+              </p>
+            )}
+          </div>
+        )}
         {loadError && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md px-2 py-1">
             {isLocalFallback

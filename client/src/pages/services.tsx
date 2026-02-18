@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { PROFESSIONAL_SERVICES } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { useToast } from "@/hooks/use-toast";
 import BrandLogo from "@/components/brand-logo";
 import { fetchServiceOfferings, type ServiceOffering } from "@/lib/service-offerings";
+import { useQuery } from "@tanstack/react-query";
 
 const ICON_MAP: Record<string, any> = {
   ClipboardCheck,
@@ -51,45 +52,26 @@ export default function Services() {
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<ServiceView | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [services, setServices] = useState<ServiceView[]>(FALLBACK_SERVICES);
-  const [isLoadingServices, setIsLoadingServices] = useState(true);
+  const serviceOfferingsQuery = useQuery({
+    queryKey: ["/api/service-offerings"],
+    queryFn: fetchServiceOfferings,
+  });
 
-  useEffect(() => {
-    let mounted = true;
-    setIsLoadingServices(true);
+  const services = useMemo(() => {
+    const rows = Array.isArray(serviceOfferingsQuery.data) ? serviceOfferingsQuery.data : [];
+    if (rows.length === 0) return FALLBACK_SERVICES;
+    return rows.map((item: ServiceOffering) => ({
+      id: item.code,
+      code: item.code,
+      name: item.name,
+      description: item.description,
+      icon: item.icon,
+      price: item.price,
+      turnaround: item.turnaround,
+    }));
+  }, [serviceOfferingsQuery.data]);
 
-    void fetchServiceOfferings()
-      .then((rows) => {
-        if (!mounted) return;
-        if (!Array.isArray(rows) || rows.length === 0) {
-          setServices(FALLBACK_SERVICES);
-          return;
-        }
-
-        const mapped = rows.map((item: ServiceOffering) => ({
-          id: item.code,
-          code: item.code,
-          name: item.name,
-          description: item.description,
-          icon: item.icon,
-          price: item.price,
-          turnaround: item.turnaround,
-        }));
-        setServices(mapped);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setServices(FALLBACK_SERVICES);
-      })
-      .finally(() => {
-        if (!mounted) return;
-        setIsLoadingServices(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  const isLoadingServices = serviceOfferingsQuery.isLoading;
 
   const handleBook = (service: ServiceView) => {
     if (!user) {

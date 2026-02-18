@@ -12,6 +12,8 @@ interface User {
   email: string;
   role: UserRole;
   isVerified: boolean;
+  emailVerified: boolean;
+  phoneVerified: boolean;
   avatar?: string;
 }
 
@@ -22,7 +24,8 @@ interface SignInPayload {
 
 interface SignUpPayload extends SignInPayload {
   name: string;
-  role: Exclude<UserRole, null>;
+  role: "buyer" | "seller" | "agent" | "owner" | "renter";
+  gender?: "male" | "female" | "other" | "prefer_not_to_say";
 }
 
 interface AuthContextType {
@@ -39,15 +42,48 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const VERIFICATION_POLL_INTERVAL_MS = 8000;
 
-function normalizeRole(rawRole: unknown): Exclude<UserRole, null> {
+function normalizeRole(
+  rawRole: unknown,
+  options?: { allowAdmin?: boolean },
+): Exclude<UserRole, null> {
   const role = String(rawRole ?? "")
     .trim()
     .toLowerCase();
-  if (role === "buyer" || role === "seller" || role === "agent" || role === "admin") {
+  if (role === "buyer" || role === "seller" || role === "agent") {
     return role;
+  }
+  if (role === "admin") {
+    return options?.allowAdmin ? "admin" : "buyer";
   }
   if (role === "owner" || role === "renter") return role;
   return "buyer";
+}
+
+function formatAuthError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  if (error && typeof error === "object") {
+    const payload = error as Record<string, unknown>;
+    const message = String(
+      payload.message ??
+        payload.error_description ??
+        payload.msg ??
+        payload.details ??
+        "",
+    ).trim();
+    const code = String(payload.code ?? "").trim();
+    const status = String(payload.status ?? payload.statusCode ?? "").trim();
+    const body = String(payload.body ?? "").trim();
+
+    const parts = [message, code ? `code=${code}` : "", status ? `status=${status}` : "", body]
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join(" | ");
+  }
+
+  return "Authentication failed. Please try again.";
 }
 
 function toAppUser(payload: {
@@ -56,6 +92,8 @@ function toAppUser(payload: {
   email?: string;
   role?: string;
   isVerified?: boolean;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
   avatar?: string;
 }): User {
   const email = String(payload.email ?? "").trim();
@@ -68,8 +106,10 @@ function toAppUser(payload: {
     id: String(payload.id ?? ""),
     name: resolvedName,
     email,
-    role: normalizeRole(payload.role ?? "buyer"),
+    role: normalizeRole(payload.role ?? "buyer", { allowAdmin: true }),
     isVerified: Boolean(payload.isVerified),
+    emailVerified: Boolean(payload.emailVerified),
+    phoneVerified: Boolean(payload.phoneVerified),
     avatar: String(payload.avatar ?? "").trim() || undefined,
   };
 }
@@ -98,6 +138,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email?: string;
         role?: string;
         isVerified?: boolean;
+        emailVerified?: boolean;
+        phoneVerified?: boolean;
         avatar?: string;
       };
       return toAppUser(payload);
@@ -205,7 +247,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password: payload.password,
       });
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(formatAuthError(error));
+      }
       const accessToken = String(data.session?.access_token ?? "").trim();
       if (!accessToken) {
         throw new Error("Session token was not returned.");
@@ -217,6 +261,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         title: "Welcome back",
         description: "You are now signed in.",
       });
+    } catch (error) {
+      throw new Error(formatAuthError(error));
     } finally {
       setIsLoading(false);
     }
@@ -238,11 +284,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           data: {
             full_name: payload.name.trim(),
             role: normalizeRole(payload.role),
+            ...(payload.gender ? { gender: payload.gender } : {}),
           },
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(formatAuthError(error));
+      }
 
       const accessToken = String(data.session?.access_token ?? "").trim();
       if (!accessToken) {
@@ -261,6 +310,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         description: "Your account is ready. Complete identity verification to unlock all actions.",
       });
       return true;
+    } catch (error) {
+      throw new Error(formatAuthError(error));
     } finally {
       setIsLoading(false);
     }
@@ -360,6 +411,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email?: string;
       role?: string;
       isVerified?: boolean;
+      emailVerified?: boolean;
+      phoneVerified?: boolean;
       avatar?: string;
     };
     setUser(toAppUser(payload));
