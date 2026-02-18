@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { ShieldCheck, Upload, CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import {
   VerificationApiError,
+  fetchVerificationStatus,
   getSmileLinkFallbackUrl,
   sendEmailOtp,
   sendPhoneOtp,
@@ -33,6 +34,10 @@ export default function VerificationPage() {
   const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
   const [isSavingDocument, setIsSavingDocument] = useState(false);
   const [verificationId, setVerificationId] = useState("");
+  const [isStatusPolling, setIsStatusPolling] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [hasSubmittedBiometric, setHasSubmittedBiometric] = useState(false);
+  const hasRedirectedRef = useRef(false);
   const { verifyIdentity, isLoading, user } = useAuth();
   const { toast } = useToast();
 
@@ -54,6 +59,96 @@ export default function VerificationPage() {
 
     return () => window.clearInterval(timer);
   }, [resendCooldownSec, verifyBlockedSec]);
+
+  const checkVerificationStatus = useCallback(
+    async (options?: { manual?: boolean }) => {
+      if (!user?.id) return false;
+      if (options?.manual) {
+        setIsStatusPolling(true);
+      }
+
+      try {
+        const snapshot = await fetchVerificationStatus(user.id);
+        if (snapshot.isVerified || snapshot.latestStatus === "approved") {
+          if (!hasRedirectedRef.current) {
+            hasRedirectedRef.current = true;
+            toast({
+              title: "Verification complete",
+              description: "Your identity has been verified successfully.",
+            });
+            setLocation("/dashboard");
+          }
+          return true;
+        }
+
+        if (snapshot.latestStatus === "pending") {
+          setHasSubmittedBiometric(true);
+          setStep(3);
+          setStatusMessage("Verification submitted. Waiting for Smile ID confirmation.");
+          if (options?.manual) {
+            toast({
+              title: "Still processing",
+              description: "Verification is pending review. Please check again shortly.",
+            });
+          }
+        } else if (snapshot.latestStatus === "failed") {
+          setStatusMessage(
+            snapshot.latestMessage?.trim() ||
+              "Verification was not approved. Please retry facial capture.",
+          );
+          if (options?.manual) {
+            toast({
+              title: "Verification not approved",
+              description:
+                snapshot.latestMessage?.trim() ||
+                "Please retry facial capture and submit again.",
+              variant: "destructive",
+            });
+          }
+        }
+
+        return false;
+      } catch (error) {
+        if (options?.manual) {
+          const message =
+            error instanceof Error ? error.message : "Unable to check verification status.";
+          toast({
+            title: "Status check failed",
+            description: message,
+            variant: "destructive",
+          });
+        }
+        return false;
+      } finally {
+        if (options?.manual) {
+          setIsStatusPolling(false);
+        }
+      }
+    },
+    [setLocation, toast, user?.id],
+  );
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    if (!user?.id) {
+      setLocation("/auth?mode=login");
+      return;
+    }
+
+    if (user.isVerified && !hasRedirectedRef.current) {
+      hasRedirectedRef.current = true;
+      setLocation("/dashboard");
+      return;
+    }
+
+    void checkVerificationStatus();
+    const timer = window.setInterval(() => {
+      void checkVerificationStatus();
+    }, 8000);
+
+    return () => window.clearInterval(timer);
+  }, [checkVerificationStatus, isLoading, setLocation, user?.id, user?.isVerified]);
 
   const resetOtpState = () => {
     setOtpSent(false);
@@ -298,14 +393,30 @@ export default function VerificationPage() {
   };
 
   const handleStartScan = async () => {
+    if (hasSubmittedBiometric) {
+      await checkVerificationStatus({ manual: true });
+      return;
+    }
+
     try {
       const isApproved = await verifyIdentity({
         verificationId: verificationId || undefined,
       });
-      setLocation(isApproved ? "/dashboard" : "/profile");
+      if (isApproved) {
+        hasRedirectedRef.current = true;
+        setLocation("/dashboard");
+        return;
+      }
+
+      setHasSubmittedBiometric(true);
+      setStatusMessage("Verification submitted. Waiting for Smile ID confirmation.");
     } catch {
+      setHasSubmittedBiometric(true);
       const fallbackUrl = getSmileLinkFallbackUrl();
-      if (!fallbackUrl) return;
+      if (!fallbackUrl) {
+        setStatusMessage("Could not open Smile hosted flow. Please retry.");
+        return;
+      }
 
       toast({
         title: "Redirecting to Smile Link",
@@ -505,8 +616,21 @@ export default function VerificationPage() {
                 <div className="absolute inset-0 bg-gradient-to-b from-blue-500/10 to-transparent"></div>
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-64 border-2 border-white/20 rounded-[40%]"></div>
               </div>
-              <Button onClick={handleStartScan} className="w-full bg-blue-600" disabled={isLoading}>
-                {isLoading ? "Submitting to Smile ID..." : "Start Scan"}
+              {statusMessage ? (
+                <p className="text-sm text-slate-500">{statusMessage}</p>
+              ) : null}
+              <Button
+                onClick={handleStartScan}
+                className="w-full bg-blue-600"
+                disabled={isLoading || isStatusPolling}
+              >
+                {isLoading
+                  ? "Submitting to Smile ID..."
+                  : isStatusPolling
+                    ? "Checking Status..."
+                    : hasSubmittedBiometric
+                      ? "Refresh Verification Status"
+                      : "Start Scan"}
               </Button>
             </div>
           )}
