@@ -28,6 +28,9 @@ If your project already exists and you need role-based columns/tables added safe
 - `supabase/role_based_upgrade.sql`
 - `supabase/role_owner_renter_permissions.sql` (run this immediately after `role_based_upgrade.sql`)
 
+If your project was bootstrapped before `verifications.user_id` was UUID-based, run:
+- `supabase/verifications_user_id_uuid_upgrade.sql`
+
 If you are implementing the full agent listing workflow (agent roles, listings, verification steps, and storage buckets), also run:
 - `supabase/agent_roles_listings_storage.sql`
 

@@ -109,7 +109,7 @@ execute function public.set_updated_at();
 -- -------------------------------------------------------------------
 create table if not exists public.verifications (
   id uuid primary key default gen_random_uuid(),
-  user_id text not null,
+  user_id uuid not null references public.users(id) on delete cascade,
   mode text not null check (mode in ('kyc', 'biometric')),
   provider text not null check (provider in ('smile-id', 'mock')),
   status text not null check (status in ('approved', 'pending', 'failed')),
