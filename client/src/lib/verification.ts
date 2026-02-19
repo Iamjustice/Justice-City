@@ -1,4 +1,5 @@
 import { apiRequest } from "@/lib/queryClient";
+import { getSupabaseClient } from "@/lib/supabase";
 
 export interface VerificationRequest {
   mode: "kyc" | "biometric";
@@ -188,6 +189,24 @@ export async function verifyPhoneOtp(
 
 export async function sendEmailOtp(email: string): Promise<PhoneOtpSendResponse> {
   return requestVerificationJson<PhoneOtpSendResponse>("/api/verification/email/send", { email });
+}
+
+export async function sendEmailVerificationLink(email: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase auth is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+  }
+
+  const redirectTo = `${window.location.origin}/auth?mode=login`;
+  const { error } = await supabase.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: redirectTo },
+  });
+
+  if (error) {
+    throw new Error(error.message || "Failed to send verification link.");
+  }
 }
 
 export async function verifyEmailOtp(
