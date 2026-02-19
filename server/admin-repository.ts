@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { sendConversationMessage, upsertChatConversation } from "./chat-repository";
+import { setUserVerificationState } from "./verification-repository";
 
 export type AdminVerificationStatus = "Awaiting Review" | "Approved" | "Rejected";
 export type AdminFlaggedListingStatus = "Open" | "Under Review" | "Cleared";
@@ -684,10 +685,13 @@ export async function setVerificationStatus(
     return;
   }
 
-  const { error } = await client
+  const nextStatus = toDbVerificationStatus(status);
+  const { data, error } = await client
     .from(VERIFICATIONS_TABLE)
-    .update({ status: toDbVerificationStatus(status), updated_at: new Date().toISOString() })
-    .eq("id", verificationId);
+    .update({ status: nextStatus, updated_at: new Date().toISOString() })
+    .eq("id", verificationId)
+    .select("user_id")
+    .maybeSingle<{ user_id?: string | null }>();
 
   if (error) {
     if (isTableMissingError(error)) {
@@ -697,6 +701,13 @@ export async function setVerificationStatus(
       return;
     }
     throw new Error(`Failed to update verification status: ${error.message}`);
+  }
+
+  if (nextStatus === "approved") {
+    const userId = String(data?.user_id ?? "").trim();
+    if (userId) {
+      await setUserVerificationState(userId, true);
+    }
   }
 }
 

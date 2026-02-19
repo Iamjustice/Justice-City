@@ -223,9 +223,23 @@ export async function getUserVerificationSnapshot(
     );
   }
 
+  const { data: approvedRecord, error: approvedError } = await client
+    .from(TABLE)
+    .select("status")
+    .eq("user_id", normalizedUserId)
+    .eq("status", "approved")
+    .limit(1)
+    .maybeSingle<{ status: VerificationStatus }>();
+
+  if (approvedError && !isMissingTableOrColumnError(approvedError)) {
+    throw new Error(
+      `Supabase getUserVerificationSnapshot approved lookup failed: ${approvedError.message}`,
+    );
+  }
+
   return {
     userId: normalizedUserId,
-    isVerified: userIsVerified || latest?.status === "approved",
+    isVerified: userIsVerified || Boolean(approvedRecord) || latest?.status === "approved",
     userRowFound,
     latestStatus: latest?.status ?? null,
     latestJobId: latest?.job_id ?? null,
