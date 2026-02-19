@@ -61,12 +61,26 @@ function normalizeRole(
 }
 
 function formatAuthError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
+  const isUsefulMessage = (value: unknown): value is string => {
+    if (typeof value !== "string") return false;
+    const normalized = value.trim();
+    if (!normalized) return false;
 
-  if (error && typeof error === "object") {
-    const payload = error as Record<string, unknown>;
+    const lowered = normalized.toLowerCase();
+    if (
+      lowered === "{}" ||
+      lowered === "[]" ||
+      lowered === "null" ||
+      lowered === "undefined" ||
+      lowered === "[object object]"
+    ) {
+      return false;
+    }
+
+    return true;
+  };
+
+  const readPayloadMessage = (payload: Record<string, unknown>): string => {
     const message = String(
       payload.message ??
         payload.error_description ??
@@ -81,7 +95,32 @@ function formatAuthError(error: unknown): string {
     const parts = [message, code ? `code=${code}` : "", status ? `status=${status}` : "", body]
       .map((part) => part.trim())
       .filter(Boolean);
-    if (parts.length > 0) return parts.join(" | ");
+    return parts.join(" | ");
+  };
+
+  if (error instanceof Error) {
+    const baseMessage = String(error.message ?? "").trim();
+    if (isUsefulMessage(baseMessage)) {
+      return baseMessage;
+    }
+
+    try {
+      const parsed = JSON.parse(baseMessage);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const extracted = readPayloadMessage(parsed as Record<string, unknown>);
+        if (isUsefulMessage(extracted)) {
+          return extracted;
+        }
+      }
+    } catch {
+      // Keep falling back to object-field extraction.
+    }
+  }
+
+  if (error && typeof error === "object") {
+    const payload = error as Record<string, unknown>;
+    const extracted = readPayloadMessage(payload);
+    if (isUsefulMessage(extracted)) return extracted;
   }
 
   return "Authentication failed. Please try again.";
