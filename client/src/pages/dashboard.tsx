@@ -81,7 +81,7 @@ export default function Dashboard() {
       if (!gateToastShown) {
         toast({
           title: "Email verification required",
-          description: "Please verify your email first to access your dashboard.",
+          description: "Open verification, select Email OTP, then send and enter your code to continue.",
           variant: "destructive",
         });
         setGateToastShown(true);

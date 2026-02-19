@@ -307,7 +307,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(profile);
       toast({
         title: "Account created",
-        description: "Your account is ready. Complete identity verification to unlock all actions.",
+        description: "Your account is ready. Next, verify your email code to continue.",
       });
       return true;
     } catch (error) {

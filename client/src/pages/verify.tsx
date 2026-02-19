@@ -21,7 +21,7 @@ import { useToast } from "@/hooks/use-toast";
 export default function VerificationPage() {
   const [, setLocation] = useLocation();
   const [step, setStep] = useState(1);
-  const [otpMethod, setOtpMethod] = useState<"sms" | "email">("sms");
+  const [otpMethod, setOtpMethod] = useState<"sms" | "email">("email");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [otpCode, setOtpCode] = useState("");
@@ -40,6 +40,7 @@ export default function VerificationPage() {
   const hasRedirectedRef = useRef(false);
   const { verifyIdentity, isLoading, user } = useAuth();
   const { toast } = useToast();
+  const emailVerificationRequired = Boolean(user && !user.emailVerified);
 
   const normalizePhone = (value: string): string => value.replace(/\s+/g, "").trim();
   const normalizeEmail = (value: string): string => value.trim().toLowerCase();
@@ -48,6 +49,12 @@ export default function VerificationPage() {
     if (!user?.email) return;
     setEmail((current) => (current.trim() ? current : user.email));
   }, [user?.email]);
+
+  useEffect(() => {
+    if (emailVerificationRequired) {
+      setOtpMethod("email");
+    }
+  }, [emailVerificationRequired]);
 
   useEffect(() => {
     if (resendCooldownSec <= 0 && verifyBlockedSec <= 0) return;
@@ -69,7 +76,8 @@ export default function VerificationPage() {
 
       try {
         const snapshot = await fetchVerificationStatus(user.id);
-        if (snapshot.isVerified || snapshot.latestStatus === "approved") {
+        const identityApproved = snapshot.isVerified || snapshot.latestStatus === "approved";
+        if (identityApproved && user?.emailVerified) {
           if (!hasRedirectedRef.current) {
             hasRedirectedRef.current = true;
             toast({
@@ -79,6 +87,12 @@ export default function VerificationPage() {
             setLocation("/dashboard");
           }
           return true;
+        }
+
+        if (identityApproved && !user?.emailVerified) {
+          setStep(1);
+          setStatusMessage("Identity check is complete. Verify your email code to continue.");
+          return false;
         }
 
         if (snapshot.latestStatus === "pending") {
@@ -125,7 +139,7 @@ export default function VerificationPage() {
         }
       }
     },
-    [setLocation, toast, user?.id],
+    [setLocation, toast, user?.emailVerified, user?.id],
   );
 
   useEffect(() => {
@@ -136,7 +150,7 @@ export default function VerificationPage() {
       return;
     }
 
-    if (user.isVerified && !hasRedirectedRef.current) {
+    if (user.isVerified && user.emailVerified && !hasRedirectedRef.current) {
       hasRedirectedRef.current = true;
       setLocation("/dashboard");
       return;
@@ -269,7 +283,10 @@ export default function VerificationPage() {
     if (!token) {
       toast({
         title: "Code required",
-        description: "Enter the OTP code sent to your phone.",
+        description:
+          otpMethod === "sms"
+            ? "Enter the OTP code sent to your phone."
+            : "Enter the OTP code sent to your email.",
         variant: "destructive",
       });
       return;
@@ -301,6 +318,17 @@ export default function VerificationPage() {
               : (result.message ?? "Invalid or expired code."),
           variant: "destructive",
         });
+        return;
+      }
+
+      if (otpMethod === "email" && emailVerificationRequired) {
+        setAttemptsRemaining(null);
+        setVerifyBlockedSec(0);
+        toast({
+          title: "Email verified",
+          description: "Redirecting you to dashboard.",
+        });
+        window.location.assign("/dashboard");
         return;
       }
 
@@ -458,34 +486,42 @@ export default function VerificationPage() {
           {step === 1 && (
             <div className="space-y-6 text-center">
               <div className="space-y-2">
-                <h3 className="text-lg font-semibold">Step 1: Contact Verification</h3>
-                <p className="text-slate-500 text-sm">Choose SMS or Email OTP to continue</p>
+                <h3 className="text-lg font-semibold">
+                  {emailVerificationRequired ? "Step 1: Verify Your Email" : "Step 1: Contact Verification"}
+                </h3>
+                <p className="text-slate-500 text-sm">
+                  {emailVerificationRequired
+                    ? "Email verification is required before dashboard access."
+                    : "Choose SMS or Email OTP to continue"}
+                </p>
               </div>
               <div className="max-w-xs mx-auto space-y-4">
-                <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
-                  <Button
-                    type="button"
-                    variant={otpMethod === "sms" ? "default" : "ghost"}
-                    className={otpMethod === "sms" ? "bg-blue-600 hover:bg-blue-700" : ""}
-                    onClick={() => {
-                      setOtpMethod("sms");
-                      resetOtpState();
-                    }}
-                  >
-                    SMS OTP
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={otpMethod === "email" ? "default" : "ghost"}
-                    className={otpMethod === "email" ? "bg-blue-600 hover:bg-blue-700" : ""}
-                    onClick={() => {
-                      setOtpMethod("email");
-                      resetOtpState();
-                    }}
-                  >
-                    Email OTP
-                  </Button>
-                </div>
+                {!emailVerificationRequired ? (
+                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+                    <Button
+                      type="button"
+                      variant={otpMethod === "sms" ? "default" : "ghost"}
+                      className={otpMethod === "sms" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                      onClick={() => {
+                        setOtpMethod("sms");
+                        resetOtpState();
+                      }}
+                    >
+                      SMS OTP
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={otpMethod === "email" ? "default" : "ghost"}
+                      className={otpMethod === "email" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                      onClick={() => {
+                        setOtpMethod("email");
+                        resetOtpState();
+                      }}
+                    >
+                      Email OTP
+                    </Button>
+                  </div>
+                ) : null}
                 {otpMethod === "sms" ? (
                   <div className="space-y-2 text-left">
                     <Label htmlFor="phone">Phone Number</Label>
@@ -509,17 +545,19 @@ export default function VerificationPage() {
                   </div>
                 )}
                 {!otpSent ? (
-                  <Button
-                    onClick={handleSendCode}
-                    className="w-full bg-blue-600"
-                    disabled={isSendingCode || resendCooldownSec > 0}
-                  >
-                    {isSendingCode
-                      ? "Sending..."
-                      : resendCooldownSec > 0
-                        ? `Send Code (${resendCooldownSec}s)`
-                        : "Send Code"}
-                  </Button>
+                    <Button
+                      onClick={handleSendCode}
+                      className="w-full bg-blue-600"
+                      disabled={isSendingCode || resendCooldownSec > 0}
+                    >
+                      {isSendingCode
+                        ? "Sending..."
+                        : resendCooldownSec > 0
+                          ? `Send Code (${resendCooldownSec}s)`
+                          : emailVerificationRequired
+                            ? "Send Email Code"
+                            : "Send Code"}
+                    </Button>
                 ) : (
                   <>
                     <div className="space-y-2 text-left">
