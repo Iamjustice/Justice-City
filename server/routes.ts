@@ -1023,6 +1023,11 @@ export async function registerRoutes(
   app.get("/api/service-offerings", async (_req: Request, res: Response) => {
     try {
       const rows = await listServiceOfferings();
+      res.set({
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+      });
       return res.status(200).json(rows);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load service offerings";

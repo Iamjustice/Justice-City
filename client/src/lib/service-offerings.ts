@@ -11,7 +11,14 @@ export type ServiceOffering = {
 };
 
 export async function fetchServiceOfferings(): Promise<ServiceOffering[]> {
-  const response = await fetch("/api/service-offerings", { credentials: "include" });
+  const response = await fetch("/api/service-offerings", {
+    credentials: "include",
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  });
 
   if (!response.ok) {
     const text = (await response.text()) || response.statusText;

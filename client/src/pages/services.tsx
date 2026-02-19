@@ -55,6 +55,10 @@ export default function Services() {
   const serviceOfferingsQuery = useQuery({
     queryKey: ["/api/service-offerings"],
     queryFn: fetchServiceOfferings,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   const services = useMemo(() => {

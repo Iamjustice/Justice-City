@@ -296,8 +296,19 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
         turnaround,
         actorRole: user?.role ?? undefined,
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["/api/service-offerings"] });
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ServiceOffering[]>(["/api/service-offerings"], (current) => {
+        if (!Array.isArray(current) || current.length === 0) {
+          return [updated];
+        }
+
+        const next = current.map((item) => (item.code === updated.code ? updated : item));
+        return next.some((item) => item.code === updated.code) ? next : [...next, updated];
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["/api/service-offerings"],
+        refetchType: "all",
+      });
       toast({
         title: "Service settings updated",
         description: "Professional service pricing and delivery timeline have been updated.",
