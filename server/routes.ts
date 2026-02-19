@@ -413,6 +413,26 @@ async function buildAuthProfileFromToken(
     throw userError;
   }
 
+  const authUserEmailFields = authUser as {
+    email_confirmed_at?: string | null;
+    confirmed_at?: string | null;
+  };
+  const emailConfirmedFromAuth = Boolean(
+    String(authUserEmailFields.email_confirmed_at ?? authUserEmailFields.confirmed_at ?? "").trim(),
+  );
+
+  if (emailConfirmedFromAuth && !Boolean(userRow?.email_verified)) {
+    const { error: syncEmailFlagError } = await client
+      .from(USERS_TABLE)
+      .update({ email_verified: true, email: authUser.email ?? null })
+      .eq("id", authUser.id);
+    if (!syncEmailFlagError || isMissingTableOrColumnError(syncEmailFlagError)) {
+      if (userRow) {
+        userRow.email_verified = true;
+      }
+    }
+  }
+
   const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
   const email = String(userRow?.email ?? authUser.email ?? "").trim();
   const role = userRow?.role
@@ -431,7 +451,7 @@ async function buildAuthProfileFromToken(
     email,
     role,
     isVerified: Boolean(userRow?.is_verified),
-    emailVerified: Boolean(userRow?.email_verified),
+    emailVerified: Boolean(userRow?.email_verified) || emailConfirmedFromAuth,
     phoneVerified: Boolean(userRow?.phone_verified),
     avatar,
   };

@@ -11,6 +11,7 @@ import {
   fetchVerificationStatus,
   getSmileLinkFallbackUrl,
   sendEmailOtp,
+  sendEmailVerificationLink,
   sendPhoneOtp,
   uploadVerificationDocument,
   verifyEmailOtp,
@@ -27,6 +28,7 @@ export default function VerificationPage() {
   const [otpCode, setOtpCode] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [isSendingCode, setIsSendingCode] = useState(false);
+  const [isSendingLink, setIsSendingLink] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [resendCooldownSec, setResendCooldownSec] = useState(0);
   const [verifyBlockedSec, setVerifyBlockedSec] = useState(0);
@@ -38,7 +40,7 @@ export default function VerificationPage() {
   const [statusMessage, setStatusMessage] = useState("");
   const [hasSubmittedBiometric, setHasSubmittedBiometric] = useState(false);
   const hasRedirectedRef = useRef(false);
-  const { verifyIdentity, isLoading, user } = useAuth();
+  const { verifyIdentity, refreshUserProfile, isLoading, user } = useAuth();
   const { toast } = useToast();
   const emailVerificationRequired = Boolean(user && !user.emailVerified);
 
@@ -77,6 +79,29 @@ export default function VerificationPage() {
       try {
         const snapshot = await fetchVerificationStatus(user.id);
         const identityApproved = snapshot.isVerified || snapshot.latestStatus === "approved";
+        const needsEmailVerification = Boolean(user && !user.emailVerified);
+
+        if (needsEmailVerification) {
+          setStep(1);
+          if (snapshot.latestStatus === "pending") {
+            setHasSubmittedBiometric(true);
+            setStatusMessage("Identity check is in progress. Verify your email code while Smile ID review continues.");
+            if (options?.manual) {
+              toast({
+                title: "Identity still processing",
+                description: "Email verification is still required. Complete your email OTP to continue.",
+              });
+            }
+          } else if (identityApproved) {
+            setStatusMessage("Identity check is complete. Verify your email code to continue.");
+          } else if (snapshot.latestStatus === "failed") {
+            setStatusMessage("Verify your email code first, then retry facial capture if required.");
+          } else {
+            setStatusMessage("");
+          }
+          return false;
+        }
+
         if (identityApproved && user?.emailVerified) {
           if (!hasRedirectedRef.current) {
             hasRedirectedRef.current = true;
@@ -322,13 +347,14 @@ export default function VerificationPage() {
       }
 
       if (otpMethod === "email" && emailVerificationRequired) {
+        await refreshUserProfile();
         setAttemptsRemaining(null);
         setVerifyBlockedSec(0);
         toast({
           title: "Email verified",
           description: "Redirecting you to dashboard.",
         });
-        window.location.assign("/dashboard");
+        setLocation("/dashboard");
         return;
       }
 
@@ -356,6 +382,44 @@ export default function VerificationPage() {
       });
     } finally {
       setIsVerifyingCode(false);
+    }
+  };
+
+  const handleSendVerificationLink = async () => {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+      toast({
+        title: "Email required",
+        description: "Enter the email address you want to verify.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      toast({
+        title: "Invalid email",
+        description: "Enter a valid email address.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSendingLink(true);
+    try {
+      await sendEmailVerificationLink(normalizedEmail);
+      toast({
+        title: "Verification link sent",
+        description: "Check your inbox and click the email link to verify your address.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to send verification link.";
+      toast({
+        title: "Link send failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSendingLink(false);
     }
   };
 
@@ -494,6 +558,9 @@ export default function VerificationPage() {
                     ? "Email verification is required before dashboard access."
                     : "Choose SMS or Email OTP to continue"}
                 </p>
+                {statusMessage ? (
+                  <p className="text-xs text-slate-500">{statusMessage}</p>
+                ) : null}
               </div>
               <div className="max-w-xs mx-auto space-y-4">
                 {!emailVerificationRequired ? (
@@ -545,6 +612,7 @@ export default function VerificationPage() {
                   </div>
                 )}
                 {!otpSent ? (
+                  <div className="space-y-2">
                     <Button
                       onClick={handleSendCode}
                       className="w-full bg-blue-600"
@@ -558,6 +626,18 @@ export default function VerificationPage() {
                             ? "Send Email Code"
                             : "Send Code"}
                     </Button>
+                    {otpMethod === "email" ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        onClick={handleSendVerificationLink}
+                        disabled={isSendingLink}
+                      >
+                        {isSendingLink ? "Sending link..." : "Send Verification Link"}
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : (
                   <>
                     <div className="space-y-2 text-left">
@@ -670,6 +750,11 @@ export default function VerificationPage() {
                       ? "Refresh Verification Status"
                       : "Start Scan"}
               </Button>
+              {!user?.emailVerified ? (
+                <Button type="button" variant="outline" className="w-full" onClick={() => setStep(1)}>
+                  Go to Email Verification
+                </Button>
+              ) : null}
             </div>
           )}
         </CardContent>

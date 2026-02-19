@@ -36,6 +36,7 @@ interface AuthContextType {
   signUp: (payload: SignUpPayload) => Promise<boolean>;
   logout: () => Promise<void>;
   verifyIdentity: (options?: { verificationId?: string }) => Promise<boolean>;
+  refreshUserProfile: () => Promise<void>;
   updateProfileAvatar: (file: File) => Promise<void>;
 }
 
@@ -170,6 +171,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
     }
   }, [fetchAuthProfile, supabase]);
+
+  const refreshUserProfile = useCallback(async (): Promise<void> => {
+    const accessToken = await getAccessToken();
+    if (!accessToken) return;
+    try {
+      const profile = await fetchAuthProfile(accessToken);
+      setUser(profile);
+    } catch {
+      // Keep the current session state if profile refresh fails transiently.
+    }
+  }, [fetchAuthProfile, getAccessToken]);
 
   useEffect(() => {
     let active = true;
@@ -433,6 +445,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signUp,
         logout,
         verifyIdentity,
+        refreshUserProfile,
         updateProfileAvatar,
       }}
     >

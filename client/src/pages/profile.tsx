@@ -5,14 +5,19 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, Mail, Phone, MapPin, AlertTriangle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 
 export default function ProfilePage() {
   const { user, updateProfileAvatar } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!user) return <div className="p-20 text-center">Please log in to view profile.</div>;
+
+  const emailVerified = Boolean(user.emailVerified);
+  const phoneVerified = Boolean(user.phoneVerified);
 
   const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -32,6 +37,14 @@ export default function ProfilePage() {
     } finally {
       setIsUploadingAvatar(false);
     }
+  };
+
+  const handleOpenVerification = () => {
+    setLocation("/verify");
+    toast({
+      title: "Continue verification",
+      description: "Finish email and identity verification to unlock dashboard access.",
+    });
   };
 
   return (
@@ -80,13 +93,35 @@ export default function ProfilePage() {
               </p>
             </div>
             <div className="mt-8 pt-8 border-t border-slate-100 space-y-4 text-left">
-              <div className="flex items-center gap-3 text-slate-600">
-                <Mail className="w-4 h-4" />
-                <span className="text-sm">{user.email}</span>
+              <div className="flex items-center justify-between gap-3 text-slate-600">
+                <div className="min-w-0 flex items-center gap-3">
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span className="text-sm truncate">{user.email}</span>
+                </div>
+                {emailVerified ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Verified
+                  </span>
+                ) : (
+                  <Button type="button" size="sm" variant="outline" onClick={handleOpenVerification}>
+                    Verify
+                  </Button>
+                )}
               </div>
-              <div className="flex items-center gap-3 text-slate-600">
-                <Phone className="w-4 h-4" />
-                <span className="text-sm">+234 (0) 906 534 0189</span>
+              <div className="flex items-center justify-between gap-3 text-slate-600">
+                <div className="min-w-0 flex items-center gap-3">
+                  <Phone className="w-4 h-4 shrink-0" />
+                  <span className="text-sm truncate">+234 (0) 906 534 0189</span>
+                </div>
+                {phoneVerified ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Verified
+                  </span>
+                ) : (
+                  <span className="text-xs text-slate-500">Unverified</span>
+                )}
               </div>
               <div className="flex items-center gap-3 text-slate-600">
                 <MapPin className="w-4 h-4" />
