@@ -96,24 +96,41 @@ function mapDbRowToServiceOffering(row: Record<string, unknown>): ServiceOfferin
 }
 
 async function ensureDefaultRows(client: SupabaseClient): Promise<void> {
-  const rows = DEFAULT_SERVICE_OFFERINGS.map((item) => ({
-    code: item.code,
-    display_name: item.name,
-    description: item.description,
-    icon_key: item.icon,
-    price_label: item.price,
-    turnaround_label: item.turnaround,
-  }));
-
-  const { error } = await client
+  const { data: existingRows, error: existingError } = await client
     .from(SERVICE_OFFERINGS_TABLE)
-    .upsert(rows, { onConflict: "code" });
+    .select("code");
 
-  if (error) {
-    if (isTableMissingError(error) || isColumnMissingError(error)) {
-      throw error;
+  if (existingError) {
+    if (isTableMissingError(existingError) || isColumnMissingError(existingError)) {
+      throw existingError;
     }
-    throw error;
+    throw existingError;
+  }
+
+  const existingCodes = new Set(
+    (Array.isArray(existingRows) ? existingRows : []).map((row) => String(row.code ?? "").trim()),
+  );
+
+  const rowsToInsert = DEFAULT_SERVICE_OFFERINGS
+    .filter((item) => !existingCodes.has(item.code))
+    .map((item) => ({
+      code: item.code,
+      display_name: item.name,
+      description: item.description,
+      icon_key: item.icon,
+      price_label: item.price,
+      turnaround_label: item.turnaround,
+    }));
+
+  if (rowsToInsert.length === 0) return;
+
+  const { error: insertError } = await client.from(SERVICE_OFFERINGS_TABLE).insert(rowsToInsert);
+
+  if (insertError) {
+    if (isTableMissingError(insertError) || isColumnMissingError(insertError)) {
+      throw insertError;
+    }
+    throw insertError;
   }
 }
 
