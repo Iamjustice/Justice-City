@@ -62,6 +62,17 @@ async function buildAll() {
 }
 
 buildAll().catch((err) => {
-  console.error(err);
+  const error = err as {
+    message?: string;
+    stack?: string;
+    cause?: unknown;
+  };
+  console.error("Build failed:", error?.message ?? String(err));
+  if (error?.stack) {
+    console.error(error.stack);
+  }
+  if (error?.cause) {
+    console.error("Cause:", error.cause);
+  }
   process.exit(1);
 });

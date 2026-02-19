@@ -14,13 +14,17 @@ function shouldShowRuntimeOverlay(error: Error): boolean {
   return !/(chrome|moz|safari)-extension:\/\//i.test(errorText);
 }
 
+const isProductionBuild = process.env.NODE_ENV === "production";
+
 export default defineConfig({
   plugins: [
     react(),
-    runtimeErrorOverlay({ filter: shouldShowRuntimeOverlay }),
+    ...(isProductionBuild
+      ? []
+      : [runtimeErrorOverlay({ filter: shouldShowRuntimeOverlay })]),
     tailwindcss(),
     metaImagesPlugin(),
-    ...(process.env.NODE_ENV !== "production" &&
+    ...(!isProductionBuild &&
     process.env.REPL_ID !== undefined
       ? [
           await import("@replit/vite-plugin-cartographer").then((m) =>
@@ -48,6 +52,10 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      // Lower parallel file operations to reduce EMFILE risk on constrained CI hosts.
+      maxParallelFileOps: 64,
+    },
   },
   server: {
     host: "0.0.0.0",
