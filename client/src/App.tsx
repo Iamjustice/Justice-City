@@ -20,6 +20,7 @@ import TermsOfServicePage from "@/pages/terms-of-service";
 import EscrowPolicyPage from "@/pages/escrow-policy";
 import HiringPage from "@/pages/hiring";
 import ProviderPackagePage from "@/pages/provider-package";
+import ReplitVisualsPage from "@/pages/replit-visuals";
 
 function Router() {
   return (
@@ -39,6 +40,7 @@ function Router() {
         <Route path="/privacy-policy" component={PrivacyPolicyPage} />
         <Route path="/escrow-policy" component={EscrowPolicyPage} />
         <Route path="/provider-package/:token" component={ProviderPackagePage} />
+        <Route path="/replit-visuals" component={ReplitVisualsPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
