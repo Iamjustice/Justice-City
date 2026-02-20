@@ -9,6 +9,37 @@ import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import BrandLogo from "@/components/brand-logo";
 
+function normalizeAuthUiError(error: unknown): string {
+  const fallback = "Sign-up could not be completed. Please try again.";
+
+  const isJunk = (value: string): boolean => {
+    const normalized = value.trim().toLowerCase();
+    return (
+      !normalized ||
+      normalized === "{}" ||
+      normalized === "[]" ||
+      normalized === "null" ||
+      normalized === "undefined" ||
+      normalized === "[object object]"
+    );
+  };
+
+  if (error instanceof Error) {
+    const message = String(error.message ?? "").trim();
+    if (!isJunk(message)) return message;
+  }
+
+  if (error && typeof error === "object") {
+    const payload = error as Record<string, unknown>;
+    const message = String(
+      payload.message ?? payload.error_description ?? payload.details ?? payload.msg ?? "",
+    ).trim();
+    if (!isJunk(message)) return message;
+  }
+
+  return fallback;
+}
+
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
   const [isSignUp, setIsSignUp] = useState(true);
@@ -57,7 +88,7 @@ export default function AuthPage() {
         setLocation("/dashboard");
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Authentication failed.";
+      const message = normalizeAuthUiError(error);
       setAuthErrorMessage(message);
       console.error("Auth submit failed", {
         mode: isSignUp ? "signup" : "login",

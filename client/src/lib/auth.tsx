@@ -42,6 +42,8 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const VERIFICATION_POLL_INTERVAL_MS = 8000;
+const AUTH_REQUEST_TIMEOUT_MS = 20000;
+const PROFILE_SYNC_TIMEOUT_MS = 12000;
 
 function normalizeRole(
   rawRole: unknown,
@@ -81,16 +83,30 @@ function formatAuthError(error: unknown): string {
   };
 
   const readPayloadMessage = (payload: Record<string, unknown>): string => {
+    const nestedError = payload.error;
+    const nestedErrorObj =
+      nestedError && typeof nestedError === "object" && !Array.isArray(nestedError)
+        ? (nestedError as Record<string, unknown>)
+        : null;
+
     const message = String(
       payload.message ??
         payload.error_description ??
         payload.msg ??
         payload.details ??
+        payload.error_details ??
+        (typeof nestedError === "string" ? nestedError : "") ??
+        nestedErrorObj?.message ??
         "",
     ).trim();
     const code = String(payload.code ?? "").trim();
     const status = String(payload.status ?? payload.statusCode ?? "").trim();
-    const body = String(payload.body ?? "").trim();
+    const body = String(
+      payload.body ??
+        payload.responseText ??
+        nestedErrorObj?.details ??
+        "",
+    ).trim();
 
     const parts = [message, code ? `code=${code}` : "", status ? `status=${status}` : "", body]
       .map((part) => part.trim())
@@ -126,6 +142,27 @@ function formatAuthError(error: unknown): string {
   return "Authentication failed. Please try again.";
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 function toAppUser(payload: {
   id: string;
   name?: string;
@@ -152,6 +189,46 @@ function toAppUser(payload: {
     phoneVerified: Boolean(payload.phoneVerified),
     avatar: String(payload.avatar ?? "").trim() || undefined,
   };
+}
+
+function toFallbackUserFromAuthUser(
+  authUser: {
+    id?: string | null;
+    email?: string | null;
+    user_metadata?: Record<string, unknown> | null;
+    email_confirmed_at?: string | null;
+    confirmed_at?: string | null;
+  } | null | undefined,
+  options?: { fallbackName?: string; fallbackRole?: string },
+): User | null {
+  const userId = String(authUser?.id ?? "").trim();
+  if (!userId) return null;
+
+  const metadata = (authUser?.user_metadata ?? {}) as Record<string, unknown>;
+  const email = String(authUser?.email ?? "").trim();
+  const name =
+    String(metadata.full_name ?? metadata.name ?? options?.fallbackName ?? "").trim() ||
+    email.split("@")[0] ||
+    "User";
+  const avatar =
+    String(metadata.avatar_url ?? metadata.picture ?? "").trim() || undefined;
+  const role = normalizeRole(metadata.role ?? options?.fallbackRole ?? "buyer", {
+    allowAdmin: true,
+  });
+  const emailVerified = Boolean(
+    String(authUser?.email_confirmed_at ?? authUser?.confirmed_at ?? "").trim(),
+  );
+
+  return toAppUser({
+    id: userId,
+    name,
+    email,
+    role,
+    avatar,
+    emailVerified,
+    isVerified: false,
+    phoneVerified: false,
+  });
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -293,10 +370,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: payload.email.trim(),
-        password: payload.password,
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: payload.email.trim(),
+          password: payload.password,
+        }),
+        AUTH_REQUEST_TIMEOUT_MS,
+        "Login request timed out. Please check your connection and try again.",
+      );
 
       if (error) {
         throw new Error(formatAuthError(error));
@@ -306,8 +387,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("Session token was not returned.");
       }
 
-      const profile = await fetchAuthProfile(accessToken);
-      setUser(profile);
+      try {
+        const profile = await withTimeout(
+          fetchAuthProfile(accessToken),
+          PROFILE_SYNC_TIMEOUT_MS,
+          "Login completed but profile sync is taking too long.",
+        );
+        setUser(profile);
+      } catch (profileError) {
+        console.error("Sign-in profile sync failed", profileError);
+        const fallbackUser = toFallbackUserFromAuthUser(data.user, {
+          fallbackName: payload.email.trim(),
+          fallbackRole: "buyer",
+        });
+        if (!fallbackUser) {
+          throw profileError;
+        }
+        setUser(fallbackUser);
+      }
+
       toast({
         title: "Welcome back",
         description: "You are now signed in.",
@@ -328,17 +426,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: payload.email.trim(),
-        password: payload.password,
-        options: {
-          data: {
-            full_name: payload.name.trim(),
-            role: normalizeRole(payload.role),
-            ...(payload.gender ? { gender: payload.gender } : {}),
+      const { data, error } = await withTimeout(
+        supabase.auth.signUp({
+          email: payload.email.trim(),
+          password: payload.password,
+          options: {
+            data: {
+              full_name: payload.name.trim(),
+              role: normalizeRole(payload.role),
+              ...(payload.gender ? { gender: payload.gender } : {}),
+            },
           },
-        },
-      });
+        }),
+        AUTH_REQUEST_TIMEOUT_MS,
+        "Sign up request timed out. Please check your connection and try again.",
+      );
 
       if (error) {
         throw new Error(formatAuthError(error));
@@ -354,8 +456,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
-      const profile = await fetchAuthProfile(accessToken);
-      setUser(profile);
+      try {
+        const profile = await withTimeout(
+          fetchAuthProfile(accessToken),
+          PROFILE_SYNC_TIMEOUT_MS,
+          "Account created but profile sync is taking too long.",
+        );
+        setUser(profile);
+      } catch (profileError) {
+        console.error("Sign-up profile sync failed", profileError);
+        const fallbackUser = toFallbackUserFromAuthUser(data.user, {
+          fallbackName: payload.name,
+          fallbackRole: payload.role,
+        });
+        if (!fallbackUser) {
+          throw profileError;
+        }
+        setUser(fallbackUser);
+      }
+
       toast({
         title: "Account created",
         description: "Your account is ready. Next, verify your email code to continue.",
