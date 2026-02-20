@@ -518,6 +518,91 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  app.post("/api/auth/signup", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const payload = (req.body ?? {}) as Record<string, unknown>;
+      const name = String(payload.name ?? "").trim();
+      const email = normalizeEmail(payload.email);
+      const password = String(payload.password ?? "");
+      const role = normalizeUserRole(payload.role);
+      const genderRaw = String(payload.gender ?? "").trim().toLowerCase();
+      const gender =
+        genderRaw === "male" ||
+        genderRaw === "female" ||
+        genderRaw === "other" ||
+        genderRaw === "prefer_not_to_say"
+          ? genderRaw
+          : undefined;
+
+      if (!name) {
+        return res.status(400).json({ message: "Name is required." });
+      }
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ message: "A valid email is required." });
+      }
+      if (password.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters." });
+      }
+
+      const userMetadata: Record<string, unknown> = {
+        full_name: name,
+        role,
+      };
+      if (gender) {
+        userMetadata.gender = gender;
+      }
+
+      const { data, error } = await client.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: userMetadata,
+      });
+
+      if (error) {
+        const message = String(error.message ?? "").trim();
+        const lowered = message.toLowerCase();
+        if (
+          lowered.includes("already") ||
+          lowered.includes("exists") ||
+          lowered.includes("duplicate")
+        ) {
+          return res.status(200).json({
+            created: false,
+            alreadyExists: true,
+            requiresEmailConfirmation: false,
+          });
+        }
+        return res.status(502).json({ message: message || "Unable to create account." });
+      }
+
+      const createdUser = data.user;
+      if (!createdUser?.id) {
+        return res.status(502).json({ message: "Unable to create account." });
+      }
+
+      await ensurePublicUserRow(client, {
+        id: createdUser.id,
+        email: createdUser.email ?? email,
+        user_metadata: (createdUser.user_metadata ?? userMetadata) as Record<string, unknown>,
+      });
+
+      return res.status(201).json({
+        created: true,
+        alreadyExists: false,
+        requiresEmailConfirmation: false,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create account.";
+      return res.status(502).json({ message });
+    }
+  });
+
   app.get("/api/auth/me", async (req: Request, res: Response) => {
     try {
       const client = createSupabaseServiceClient();

@@ -426,8 +426,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setIsLoading(true);
     try {
-      const { data, error } = await withTimeout(
-        supabase.auth.signUp({
+      const directSupabaseSignUp = async (): Promise<boolean> => {
+        const signUpRequest = {
           email: payload.email.trim(),
           password: payload.password,
           options: {
@@ -437,23 +437,104 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ...(payload.gender ? { gender: payload.gender } : {}),
             },
           },
-        }),
-        AUTH_REQUEST_TIMEOUT_MS,
-        "Sign up request timed out. Please check your connection and try again.",
-      );
+        };
 
-      if (error) {
-        throw new Error(formatAuthError(error));
+        const { data, error } = await withTimeout(
+          supabase.auth.signUp(signUpRequest),
+          AUTH_REQUEST_TIMEOUT_MS,
+          "Sign up request timed out. Please check your connection and try again.",
+        );
+
+        if (error) {
+          throw new Error(formatAuthError(error));
+        }
+
+        const accessToken = String(data.session?.access_token ?? "").trim();
+        if (!accessToken) {
+          toast({
+            title: "Check your inbox",
+            description:
+              "Your account was created. Complete email confirmation, then log in to continue.",
+          });
+          return false;
+        }
+
+        try {
+          const profile = await withTimeout(
+            fetchAuthProfile(accessToken),
+            PROFILE_SYNC_TIMEOUT_MS,
+            "Account created but profile sync is taking too long.",
+          );
+          setUser(profile);
+        } catch (profileError) {
+          console.error("Sign-up profile sync failed", profileError);
+          const fallbackUser = toFallbackUserFromAuthUser(data.user, {
+            fallbackName: payload.name,
+            fallbackRole: payload.role,
+          });
+          if (!fallbackUser) {
+            throw profileError;
+          }
+          setUser(fallbackUser);
+        }
+
+        toast({
+          title: "Account created",
+          description: "Your account is ready. Next, verify your email code to continue.",
+        });
+        return true;
+      };
+
+      let alreadyExists = false;
+      try {
+        const response = await apiRequest("POST", "/api/auth/signup", {
+          name: payload.name.trim(),
+          email: payload.email.trim(),
+          password: payload.password,
+          role: payload.role,
+          ...(payload.gender ? { gender: payload.gender } : {}),
+        });
+
+        const body = (await response.json()) as
+          | { created?: boolean; alreadyExists?: boolean }
+          | undefined;
+        alreadyExists = Boolean(body?.alreadyExists);
+      } catch (serverSignupError) {
+        const serverMessage = formatAuthError(serverSignupError);
+        const lowered = serverMessage.toLowerCase();
+        const shouldFallbackToDirect =
+          serverMessage.startsWith("404:") ||
+          lowered.includes("not found") ||
+          lowered.includes("supabase service client is not configured");
+        if (!shouldFallbackToDirect) {
+          throw new Error(serverMessage);
+        }
+        return await directSupabaseSignUp();
       }
 
-      const accessToken = String(data.session?.access_token ?? "").trim();
+      const normalizedEmail = payload.email.trim();
+      const { data: loginData, error: loginError } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password: payload.password,
+        }),
+        AUTH_REQUEST_TIMEOUT_MS,
+        "Account created but login timed out. Please try logging in now.",
+      );
+
+      if (loginError) {
+        const loginMessage = formatAuthError(loginError);
+        if (alreadyExists && loginMessage.toLowerCase().includes("invalid login")) {
+          throw new Error(
+            "This email is already registered. Use your existing password or reset password.",
+          );
+        }
+        throw new Error(loginMessage);
+      }
+
+      const accessToken = String(loginData.session?.access_token ?? "").trim();
       if (!accessToken) {
-        toast({
-          title: "Check your inbox",
-          description:
-            "Your account was created. Complete email confirmation, then log in to continue.",
-        });
-        return false;
+        throw new Error("Account created but session token was not returned.");
       }
 
       try {
@@ -464,8 +545,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         setUser(profile);
       } catch (profileError) {
-        console.error("Sign-up profile sync failed", profileError);
-        const fallbackUser = toFallbackUserFromAuthUser(data.user, {
+        console.error("Server-signup profile sync failed", profileError);
+        const fallbackUser = toFallbackUserFromAuthUser(loginData.user, {
           fallbackName: payload.name,
           fallbackRole: payload.role,
         });
@@ -476,8 +557,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       toast({
-        title: "Account created",
-        description: "Your account is ready. Next, verify your email code to continue.",
+        title: alreadyExists ? "Welcome back" : "Account created",
+        description: alreadyExists
+          ? "This email already had an account, so we signed you in."
+          : "Your account is ready. Continue to verification to finish onboarding.",
       });
       return true;
     } catch (error) {
