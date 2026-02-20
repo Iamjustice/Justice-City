@@ -60,7 +60,7 @@ export default function AuthPage() {
     email: "",
     password: "",
     role: "buyer" as "buyer" | "seller" | "agent" | "owner" | "renter",
-    gender: "prefer_not_to_say" as "male" | "female" | "other" | "prefer_not_to_say",
+    gender: "male" as "male" | "female",
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -173,7 +173,7 @@ export default function AuthPage() {
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="gender">Gender (Optional)</Label>
+                  <Label htmlFor="gender">Gender</Label>
                   <select
                     id="gender"
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"
@@ -181,14 +181,12 @@ export default function AuthPage() {
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        gender: e.target.value as "male" | "female" | "other" | "prefer_not_to_say",
+                        gender: e.target.value as "male" | "female",
                       })
                     }
                   >
-                    <option value="prefer_not_to_say">Prefer not to say</option>
-                    <option value="female">Female</option>
                     <option value="male">Male</option>
-                    <option value="other">Other</option>
+                    <option value="female">Female</option>
                   </select>
                 </div>
               </>

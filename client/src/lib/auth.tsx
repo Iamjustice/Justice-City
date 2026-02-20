@@ -25,7 +25,7 @@ interface SignInPayload {
 interface SignUpPayload extends SignInPayload {
   name: string;
   role: "buyer" | "seller" | "agent" | "owner" | "renter";
-  gender?: "male" | "female" | "other" | "prefer_not_to_say";
+  gender: "male" | "female";
 }
 
 interface AuthContextType {
@@ -434,7 +434,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             data: {
               full_name: payload.name.trim(),
               role: normalizeRole(payload.role),
-              ...(payload.gender ? { gender: payload.gender } : {}),
+              gender: payload.gender,
             },
           },
         };
@@ -492,7 +492,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email: payload.email.trim(),
           password: payload.password,
           role: payload.role,
-          ...(payload.gender ? { gender: payload.gender } : {}),
+          gender: payload.gender,
         });
 
         const body = (await response.json()) as

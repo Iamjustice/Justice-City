@@ -531,13 +531,7 @@ export async function registerRoutes(
       const password = String(payload.password ?? "");
       const role = normalizeUserRole(payload.role);
       const genderRaw = String(payload.gender ?? "").trim().toLowerCase();
-      const gender =
-        genderRaw === "male" ||
-        genderRaw === "female" ||
-        genderRaw === "other" ||
-        genderRaw === "prefer_not_to_say"
-          ? genderRaw
-          : undefined;
+      const gender = genderRaw === "male" || genderRaw === "female" ? genderRaw : "";
 
       if (!name) {
         return res.status(400).json({ message: "Name is required." });
@@ -548,14 +542,15 @@ export async function registerRoutes(
       if (password.length < 6) {
         return res.status(400).json({ message: "Password must be at least 6 characters." });
       }
+      if (!gender) {
+        return res.status(400).json({ message: "Gender must be Male or Female." });
+      }
 
       const userMetadata: Record<string, unknown> = {
         full_name: name,
         role,
+        gender,
       };
-      if (gender) {
-        userMetadata.gender = gender;
-      }
 
       const { data, error } = await client.auth.admin.createUser({
         email,

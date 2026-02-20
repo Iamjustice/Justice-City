@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Justice City: Run Full Stack",
+      "type": "npm",
+      "script": "dev",
+      "isBackground": true,
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "Justice City: Run Client Only",
+      "type": "npm",
+      "script": "dev:client",
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

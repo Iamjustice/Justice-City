@@ -5,6 +5,9 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/lib/auth";
 import Layout from "@/components/layout";
+import DevErrorBoundary from "@/components/dev/dev-error-boundary";
+import DevRuntimeOverlay from "@/components/dev/dev-runtime-overlay";
+import DevHelperBanner from "@/components/dev/dev-helper-banner";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import PropertyDetails from "@/pages/property-details";
@@ -20,7 +23,6 @@ import TermsOfServicePage from "@/pages/terms-of-service";
 import EscrowPolicyPage from "@/pages/escrow-policy";
 import HiringPage from "@/pages/hiring";
 import ProviderPackagePage from "@/pages/provider-package";
-import ReplitVisualsPage from "@/pages/replit-visuals";
 
 function Router() {
   return (
@@ -40,7 +42,6 @@ function Router() {
         <Route path="/privacy-policy" component={PrivacyPolicyPage} />
         <Route path="/escrow-policy" component={EscrowPolicyPage} />
         <Route path="/provider-package/:token" component={ProviderPackagePage} />
-        <Route path="/replit-visuals" component={ReplitVisualsPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
@@ -52,8 +53,12 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <TooltipProvider>
-          <Toaster />
-          <Router />
+          <DevErrorBoundary>
+            <Toaster />
+            <Router />
+            <DevRuntimeOverlay />
+            <DevHelperBanner />
+          </DevErrorBoundary>
         </TooltipProvider>
       </AuthProvider>
     </QueryClientProvider>

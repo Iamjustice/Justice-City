@@ -524,14 +524,7 @@ export default function VerificationPage() {
       <Card className="w-full max-w-2xl shadow-xl border-slate-200">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
-            <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 shadow-sm">
-              <BrandLogo className="h-8 w-auto max-w-[180px]" />
-            </div>
-          </div>
-          <div className="flex justify-center mb-4">
-            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
-              <BrandLogo variant="mark" className="h-7 w-7 rounded-md" />
-            </div>
+            <BrandLogo className="h-8 w-auto max-w-[180px]" />
           </div>
           <CardTitle className="text-2xl font-display font-bold">Identity Verification</CardTitle>
           <CardDescription>Complete these steps to become a verified member</CardDescription>
