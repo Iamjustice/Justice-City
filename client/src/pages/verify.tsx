@@ -44,6 +44,9 @@ export default function VerificationPage() {
   const { verifyIdentity, refreshUserProfile, isLoading, user } = useAuth();
   const { toast } = useToast();
   const emailVerificationRequired = Boolean(user && !user.emailVerified);
+  const phoneVerificationRequired = Boolean(user && !user.phoneVerified);
+  const contactVerificationRequired = emailVerificationRequired || phoneVerificationRequired;
+  const canChooseOtpMethod = emailVerificationRequired && phoneVerificationRequired;
 
   const normalizePhone = (value: string): string => value.replace(/\s+/g, "").trim();
   const normalizeEmail = (value: string): string => value.trim().toLowerCase();
@@ -56,8 +59,12 @@ export default function VerificationPage() {
   useEffect(() => {
     if (emailVerificationRequired) {
       setOtpMethod("email");
+      return;
     }
-  }, [emailVerificationRequired]);
+    if (phoneVerificationRequired) {
+      setOtpMethod("sms");
+    }
+  }, [emailVerificationRequired, phoneVerificationRequired]);
 
   useEffect(() => {
     if (resendCooldownSec <= 0 && verifyBlockedSec <= 0) return;
@@ -81,29 +88,48 @@ export default function VerificationPage() {
         const snapshot = await fetchVerificationStatus(user.id);
         const identityApproved = snapshot.isVerified || snapshot.latestStatus === "approved";
         const needsEmailVerification = Boolean(user && !user.emailVerified);
+        const needsPhoneVerification = Boolean(user && !user.phoneVerified);
+        const needsContactVerification = needsEmailVerification || needsPhoneVerification;
+        const pendingContactLabel =
+          needsEmailVerification && needsPhoneVerification
+            ? "email and phone"
+            : needsEmailVerification
+              ? "email"
+              : "phone";
+        const biometricSubmissionPending =
+          snapshot.latestStatus === "pending" &&
+          (snapshot.latestProvider === "smile-id" || Boolean(snapshot.latestSmileJobId));
+        const prefillPending = snapshot.latestStatus === "pending" && !biometricSubmissionPending;
 
-        if (needsEmailVerification) {
+        if (needsContactVerification) {
           setStep(1);
-          if (snapshot.latestStatus === "pending") {
-            setHasSubmittedBiometric(true);
-            setStatusMessage("Identity check is in progress. Verify your email code while Smile ID review continues.");
+          setHasSubmittedBiometric(biometricSubmissionPending);
+
+          if (biometricSubmissionPending) {
+            setStatusMessage(
+              `Identity check is in progress. Verify your ${pendingContactLabel} while Smile ID review continues.`,
+            );
             if (options?.manual) {
               toast({
                 title: "Identity still processing",
-                description: "Email verification is still required. Complete your email OTP to continue.",
+                description: `Contact verification is still required. Complete your ${pendingContactLabel} verification to continue.`,
               });
             }
+          } else if (prefillPending) {
+            setStatusMessage(
+              `Document captured. Verify your ${pendingContactLabel}, then start biometric liveness scan.`,
+            );
           } else if (identityApproved) {
-            setStatusMessage("Identity check is complete. Verify your email code to continue.");
+            setStatusMessage(`Identity check is complete. Verify your ${pendingContactLabel} to continue.`);
           } else if (snapshot.latestStatus === "failed") {
-            setStatusMessage("Verify your email code first, then retry facial capture if required.");
+            setStatusMessage(`Verify your ${pendingContactLabel} first, then retry facial capture if required.`);
           } else {
             setStatusMessage("");
           }
           return false;
         }
 
-        if (identityApproved && user?.emailVerified) {
+        if (identityApproved && user?.emailVerified && user?.phoneVerified) {
           if (!hasRedirectedRef.current) {
             hasRedirectedRef.current = true;
             toast({
@@ -115,23 +141,30 @@ export default function VerificationPage() {
           return true;
         }
 
-        if (identityApproved && !user?.emailVerified) {
-          setStep(1);
-          setStatusMessage("Identity check is complete. Verify your email code to continue.");
-          return false;
-        }
-
         if (snapshot.latestStatus === "pending") {
-          setHasSubmittedBiometric(true);
           setStep(3);
-          setStatusMessage("Verification submitted. Waiting for Smile ID confirmation.");
-          if (options?.manual) {
-            toast({
-              title: "Still processing",
-              description: "Verification is pending review. Please check again shortly.",
-            });
+          if (biometricSubmissionPending) {
+            setHasSubmittedBiometric(true);
+            setStatusMessage("Verification submitted. Waiting for Smile ID confirmation.");
+            if (options?.manual) {
+              toast({
+                title: "Still processing",
+                description: "Verification is pending review. Please check again shortly.",
+              });
+            }
+          } else {
+            setHasSubmittedBiometric(false);
+            setStatusMessage("Document uploaded. Start biometric liveness scan to continue.");
+            if (options?.manual) {
+              toast({
+                title: "Biometric scan required",
+                description: "Your document is saved. Tap Start Scan to continue verification.",
+              });
+            }
           }
         } else if (snapshot.latestStatus === "failed") {
+          setHasSubmittedBiometric(false);
+          setStep(3);
           setStatusMessage(
             snapshot.latestMessage?.trim() ||
               "Verification was not approved. Please retry facial capture.",
@@ -145,6 +178,10 @@ export default function VerificationPage() {
               variant: "destructive",
             });
           }
+        } else {
+          setHasSubmittedBiometric(false);
+          setStatusMessage("");
+          setStep(2);
         }
 
         return false;
@@ -165,7 +202,7 @@ export default function VerificationPage() {
         }
       }
     },
-    [setLocation, toast, user?.emailVerified, user?.id],
+    [setLocation, toast, user?.emailVerified, user?.id, user?.phoneVerified],
   );
 
   useEffect(() => {
@@ -176,7 +213,7 @@ export default function VerificationPage() {
       return;
     }
 
-    if (user.isVerified && user.emailVerified && !hasRedirectedRef.current) {
+    if (user.isVerified && user.emailVerified && user.phoneVerified && !hasRedirectedRef.current) {
       hasRedirectedRef.current = true;
       setLocation("/dashboard");
       return;
@@ -347,24 +384,31 @@ export default function VerificationPage() {
         return;
       }
 
-      if (otpMethod === "email" && emailVerificationRequired) {
-        await refreshUserProfile();
-        setAttemptsRemaining(null);
-        setVerifyBlockedSec(0);
-        toast({
-          title: "Email verified",
-          description: "Redirecting you to dashboard.",
-        });
-        setLocation("/dashboard");
+      setAttemptsRemaining(null);
+      setVerifyBlockedSec(0);
+      resetOtpState();
+      await refreshUserProfile();
+
+      const nextEmailVerified = Boolean(user?.emailVerified) || otpMethod === "email";
+      const nextPhoneVerified = Boolean(user?.phoneVerified) || otpMethod === "sms";
+
+      if (!nextEmailVerified || !nextPhoneVerified) {
+        setStep(1);
+        if (!nextEmailVerified) {
+          setOtpMethod("email");
+          setStatusMessage("Phone verified. Now verify your email address to continue.");
+        } else {
+          setOtpMethod("sms");
+          setStatusMessage("Email verified. Now verify your phone number to continue.");
+        }
         return;
       }
 
-      setAttemptsRemaining(null);
-      setVerifyBlockedSec(0);
+      setStatusMessage("");
       setStep(2);
       toast({
-        title: otpMethod === "sms" ? "Phone verified" : "Email verified",
-        description: "Proceed to upload your identity document.",
+        title: "Contacts verified",
+        description: "Email and phone are verified. Proceed to upload your identity document.",
       });
     } catch (error) {
       if (error instanceof VerificationApiError) {
@@ -504,10 +548,10 @@ export default function VerificationPage() {
       setHasSubmittedBiometric(true);
       setStatusMessage("Verification submitted. Waiting for Smile ID confirmation.");
     } catch {
-      setHasSubmittedBiometric(true);
       const fallbackUrl = getSmileLinkFallbackUrl();
       if (!fallbackUrl) {
-        setStatusMessage("Could not open Smile hosted flow. Please retry.");
+        setHasSubmittedBiometric(false);
+        setStatusMessage("Could not start biometric liveness check. Please retry.");
         return;
       }
 
@@ -550,11 +594,21 @@ export default function VerificationPage() {
             <div className="space-y-6 text-center">
               <div className="space-y-2">
                 <h3 className="text-lg font-semibold">
-                  {emailVerificationRequired ? "Step 1: Verify Your Email" : "Step 1: Contact Verification"}
+                  {contactVerificationRequired
+                    ? canChooseOtpMethod
+                      ? "Step 1: Verify Email and Phone"
+                      : emailVerificationRequired
+                        ? "Step 1: Verify Your Email"
+                        : "Step 1: Verify Your Phone"
+                    : "Step 1: Contact Verification"}
                 </h3>
                 <p className="text-slate-500 text-sm">
-                  {emailVerificationRequired
-                    ? "Email verification is required before dashboard access."
+                  {contactVerificationRequired
+                    ? canChooseOtpMethod
+                      ? "Both email and phone verification are required before identity approval."
+                      : emailVerificationRequired
+                        ? "Email verification is required before you can continue."
+                        : "Phone verification is required before you can continue."
                     : "Choose SMS or Email OTP to continue"}
                 </p>
                 {statusMessage ? (
@@ -562,7 +616,7 @@ export default function VerificationPage() {
                 ) : null}
               </div>
               <div className="max-w-xs mx-auto space-y-4">
-                {!emailVerificationRequired ? (
+                {canChooseOtpMethod ? (
                   <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
                     <Button
                       type="button"
@@ -621,9 +675,9 @@ export default function VerificationPage() {
                         ? "Sending..."
                         : resendCooldownSec > 0
                           ? `Send Code (${resendCooldownSec}s)`
-                          : emailVerificationRequired
+                          : otpMethod === "email"
                             ? "Send Email Code"
-                            : "Send Code"}
+                            : "Send SMS Code"}
                     </Button>
                     {otpMethod === "email" ? (
                       <Button
@@ -749,9 +803,9 @@ export default function VerificationPage() {
                       ? "Refresh Verification Status"
                       : "Start Scan"}
               </Button>
-              {!user?.emailVerified ? (
+              {contactVerificationRequired ? (
                 <Button type="button" variant="outline" className="w-full" onClick={() => setStep(1)}>
-                  Go to Email Verification
+                  Go to Contact Verification
                 </Button>
               ) : null}
             </div>

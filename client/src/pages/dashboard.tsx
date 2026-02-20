@@ -77,11 +77,17 @@ export default function Dashboard() {
       setLocation("/auth?mode=login");
       return;
     }
-    if (!user.emailVerified) {
+    if (!user.emailVerified || !user.phoneVerified) {
+      const missingContact =
+        !user.emailVerified && !user.phoneVerified
+          ? "email and phone"
+          : !user.emailVerified
+            ? "email"
+            : "phone";
       if (!gateToastShown) {
         toast({
-          title: "Email verification required",
-          description: "Open verification, select Email OTP, then send and enter your code to continue.",
+          title: "Contact verification required",
+          description: `Open verification and complete your ${missingContact} OTP to continue.`,
           variant: "destructive",
         });
         setGateToastShown(true);
@@ -90,7 +96,7 @@ export default function Dashboard() {
     }
   }, [gateToastShown, isLoading, setLocation, toast, user]);
 
-  if (isLoading || !user || !user.emailVerified) {
+  if (isLoading || !user || !user.emailVerified || !user.phoneVerified) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center text-sm text-slate-500">
         Preparing your dashboard...
