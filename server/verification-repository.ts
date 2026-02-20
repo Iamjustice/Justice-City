@@ -23,6 +23,19 @@ type UpdatedVerificationRecord = {
   changed: boolean;
 };
 
+type VerificationLookupInput = {
+  jobId?: string | null;
+  smileJobId?: string | null;
+  userId?: string | null;
+};
+
+type VerificationLookupRecord = {
+  id: string;
+  user_id: string;
+  status: VerificationStatus;
+  message?: string | null;
+};
+
 type UserVerificationSnapshot = {
   userId: string;
   isVerified: boolean;
@@ -74,26 +87,72 @@ export async function saveVerification(record: VerificationRecord): Promise<void
   }
 }
 
-export async function updateVerificationByJobId(
-  jobId: string,
+async function findVerificationByField(
+  client: SupabaseClient,
+  field: "job_id" | "smile_job_id",
+  value: string,
+): Promise<VerificationLookupRecord | null> {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+
+  const { data, error } = await client
+    .from(TABLE)
+    .select("id, user_id, status, message")
+    .eq(field, normalized)
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle<VerificationLookupRecord>();
+
+  if (error) {
+    throw new Error(`Supabase lookup by ${field} failed: ${error.message}`);
+  }
+  return data ?? null;
+}
+
+async function findLatestVerificationForUser(
+  client: SupabaseClient,
+  userId: string,
+): Promise<VerificationLookupRecord | null> {
+  const normalizedUserId = String(userId ?? "").trim();
+  if (!normalizedUserId) return null;
+
+  const primary = await client
+    .from(TABLE)
+    .select("id, user_id, status, message")
+    .eq("user_id", normalizedUserId)
+    .eq("provider", "smile-id")
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle<VerificationLookupRecord>();
+
+  if (primary.error && !isMissingTableOrColumnError(primary.error)) {
+    throw new Error(`Supabase lookup by user+provider failed: ${primary.error.message}`);
+  }
+  if (primary.data) return primary.data;
+
+  const fallback = await client
+    .from(TABLE)
+    .select("id, user_id, status, message")
+    .eq("user_id", normalizedUserId)
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle<VerificationLookupRecord>();
+
+  if (fallback.error) {
+    throw new Error(`Supabase fallback lookup by user failed: ${fallback.error.message}`);
+  }
+  return fallback.data ?? null;
+}
+
+async function applyVerificationUpdate(
+  client: SupabaseClient,
+  existing: VerificationLookupRecord,
   status: VerificationStatus,
   message?: string,
-): Promise<UpdatedVerificationRecord | null> {
-  const client = getClient();
-  if (!client) return null;
-
-  const { data: existing, error: existingError } = await client
-    .from(TABLE)
-    .select("user_id, status, message")
-    .eq("job_id", jobId)
-    .maybeSingle<{ user_id: string; status: VerificationStatus; message?: string | null }>();
-
-  if (existingError) {
-    throw new Error(`Supabase updateVerificationByJobId lookup failed: ${existingError.message}`);
-  }
-
-  if (!existing) return null;
-
+): Promise<UpdatedVerificationRecord> {
   // Idempotency + monotonic status semantics:
   // once approved, do not downgrade from subsequent callbacks.
   const nextStatus = existing.status === "approved" ? "approved" : status;
@@ -122,15 +181,22 @@ export async function updateVerificationByJobId(
   const { data, error } = await client
     .from(TABLE)
     .update(updatePayload)
-    .eq("job_id", jobId)
+    .eq("id", existing.id)
     .select("user_id, status")
     .maybeSingle<{ user_id: string; status: VerificationStatus }>();
 
   if (error) {
-    throw new Error(`Supabase updateVerificationByJobId failed: ${error.message}`);
+    throw new Error(`Supabase verification update failed: ${error.message}`);
   }
 
-  if (!data) return null;
+  if (!data) {
+    return {
+      userId: String(existing.user_id ?? ""),
+      status: nextStatus,
+      previousStatus: existing.status,
+      changed: true,
+    };
+  }
 
   return {
     userId: String(data.user_id ?? ""),
@@ -138,6 +204,60 @@ export async function updateVerificationByJobId(
     previousStatus: existing.status,
     changed: true,
   };
+}
+
+export async function updateVerificationByJobId(
+  jobId: string,
+  status: VerificationStatus,
+  message?: string,
+): Promise<UpdatedVerificationRecord | null> {
+  const client = getClient();
+  if (!client) return null;
+
+  const normalizedJobId = String(jobId ?? "").trim();
+  if (!normalizedJobId) return null;
+
+  const existing =
+    (await findVerificationByField(client, "job_id", normalizedJobId)) ??
+    (await findVerificationByField(client, "smile_job_id", normalizedJobId));
+
+  if (!existing) return null;
+  return applyVerificationUpdate(client, existing, status, message);
+}
+
+export async function updateVerificationByCallbackIdentifiers(
+  input: VerificationLookupInput,
+  status: VerificationStatus,
+  message?: string,
+): Promise<UpdatedVerificationRecord | null> {
+  const client = getClient();
+  if (!client) return null;
+
+  const normalizedJobId = String(input.jobId ?? "").trim();
+  const normalizedSmileJobId = String(input.smileJobId ?? "").trim();
+  const normalizedUserId = String(input.userId ?? "").trim();
+
+  const lookupOrder: Array<{ field: "job_id" | "smile_job_id"; value: string }> = [];
+  if (normalizedJobId) lookupOrder.push({ field: "job_id", value: normalizedJobId });
+  if (normalizedSmileJobId) lookupOrder.push({ field: "smile_job_id", value: normalizedSmileJobId });
+  if (normalizedJobId) lookupOrder.push({ field: "smile_job_id", value: normalizedJobId });
+  if (normalizedSmileJobId) lookupOrder.push({ field: "job_id", value: normalizedSmileJobId });
+
+  const seen = new Set<string>();
+  for (const lookup of lookupOrder) {
+    const key = `${lookup.field}:${lookup.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const existing = await findVerificationByField(client, lookup.field, lookup.value);
+    if (!existing) continue;
+    return applyVerificationUpdate(client, existing, status, message);
+  }
+
+  if (!normalizedUserId) return null;
+  const fallbackExisting = await findLatestVerificationForUser(client, normalizedUserId);
+  if (!fallbackExisting) return null;
+  return applyVerificationUpdate(client, fallbackExisting, status, message);
 }
 
 export async function setUserVerificationState(
