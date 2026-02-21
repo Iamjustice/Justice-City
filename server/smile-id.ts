@@ -1,4 +1,4 @@
-import { createHmac } from "crypto";
+import { createHmac, randomUUID } from "crypto";
 
 interface SmileIdVerificationPayload {
   mode: "kyc" | "biometric";
@@ -47,6 +47,19 @@ function requiredEnv(name: string): string | null {
   return value && value.trim().length > 0 ? value : null;
 }
 
+function toPositiveInt(rawValue: string | null, fallback: number): number {
+  const parsed = Number.parseInt(String(rawValue ?? "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function resolveSmileJobType(mode: SmileIdVerificationPayload["mode"]): number {
+  if (mode === "kyc") {
+    return toPositiveInt(requiredEnv("SMILE_ID_KYC_JOB_TYPE"), 6);
+  }
+  return toPositiveInt(requiredEnv("SMILE_ID_BIOMETRIC_JOB_TYPE"), 1);
+}
+
 function isProduction(): boolean {
   return process.env.NODE_ENV === "production";
 }
@@ -65,10 +78,10 @@ function generateSmileSignature(
 
 function getModePath(mode: SmileIdVerificationPayload["mode"]): string {
   if (mode === "kyc") {
-    return process.env.SMILE_ID_KYC_PATH || "/v1/biometric_kyc";
+    return process.env.SMILE_ID_KYC_PATH || "/v1/upload";
   }
 
-  return process.env.SMILE_ID_BIOMETRIC_PATH || "/v1/biometric_kyc";
+  return process.env.SMILE_ID_BIOMETRIC_PATH || "/v1/upload";
 }
 
 export async function submitSmileIdVerification(
@@ -100,6 +113,10 @@ export async function submitSmileIdVerification(
   const callbackUrl = payload.callbackUrl || process.env.SMILE_ID_CALLBACK_URL;
   const timestamp = new Date().toISOString();
   const signature = generateSmileSignature(timestamp, resolvedPartnerId, signatureApiKey);
+  const sourceSdkVersion =
+    String(process.env.SMILE_ID_SOURCE_SDK_VERSION ?? "").trim() || "1.0.0";
+  const partnerJobId = `jc-${payload.mode}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const jobType = resolveSmileJobType(payload.mode);
 
   if (!callbackUrl) {
     if (isProduction()) {
@@ -109,30 +126,33 @@ export async function submitSmileIdVerification(
     }
   }
 
+  const requestBody: Record<string, unknown> = {
+    partner_id: resolvedPartnerId,
+    smile_client_id: resolvedPartnerId,
+    timestamp,
+    signature,
+    source_sdk: "rest_api",
+    source_sdk_version: sourceSdkVersion,
+    partner_params: {
+      user_id: payload.userId,
+      job_id: partnerJobId,
+      job_type: jobType,
+    },
+    model_parameters: {},
+  };
+  if (callbackUrl) {
+    requestBody.callback_url = callbackUrl;
+  }
+
   const response = await fetch(`${baseUrl}${getModePath(payload.mode)}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Accept: "application/json",
       "x-api-key": resolvedApiKey,
       "smile-partner-id": resolvedPartnerId,
     },
-    body: JSON.stringify({
-      partner_id: resolvedPartnerId,
-      timestamp,
-      signature,
-      partner_params: {
-        user_id: payload.userId,
-      },
-      callback_url: callbackUrl ?? "https://justicecityltd.com/api/verification/smile-id/callback",
-      country: payload.country,
-      id_type: payload.idType,
-      id_number: payload.idNumber,
-      first_name: payload.firstName,
-      last_name: payload.lastName,
-      dob: payload.dateOfBirth,
-      selfie_image: payload.selfieImageBase64,
-      verification_mode: payload.mode,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   const responseText = await response.text();
@@ -145,16 +165,43 @@ export async function submitSmileIdVerification(
   }
 
   if (!response.ok) {
-    const message =
-      typeof parsedResponse.message === "string"
-        ? parsedResponse.message
-        : `Smile ID request failed with status ${response.status}`;
-
-    throw new Error(message);
+    const errorData = toRecord(parsedResponse.data);
+    const errorResult = toRecord(parsedResponse.result);
+    const smileErrorCode = pickString(
+      parsedResponse.code,
+      parsedResponse.result_code,
+      parsedResponse.ResultCode,
+      errorData?.code,
+      errorData?.result_code,
+      errorData?.ResultCode,
+      errorResult?.code,
+      errorResult?.result_code,
+      errorResult?.ResultCode,
+    );
+    const smileErrorMessage = pickString(
+      parsedResponse.message,
+      parsedResponse.error,
+      parsedResponse.ResultText,
+      errorData?.message,
+      errorData?.error,
+      errorData?.ResultText,
+      errorResult?.message,
+      errorResult?.error,
+      errorResult?.ResultText,
+      typeof parsedResponse.raw === "string" ? parsedResponse.raw : "",
+      response.statusText,
+    );
+    const codeSuffix = smileErrorCode ? ` (${smileErrorCode})` : "";
+    const detail = smileErrorMessage || "Unknown Smile ID error";
+    throw new Error(`Smile ID request failed with status ${response.status}${codeSuffix}: ${detail}`);
   }
 
   const responseData = toRecord(parsedResponse.data);
   const responseResult = toRecord(parsedResponse.result);
+  const responsePartnerParams =
+    toRecord(parsedResponse.partner_params) ??
+    toRecord(responseData?.partner_params) ??
+    toRecord(responseResult?.partner_params);
 
   const resolvedJobId =
     pickString(
@@ -170,6 +217,9 @@ export async function submitSmileIdVerification(
       responseResult?.jobId,
       responseResult?.smile_job_id,
       responseResult?.smileJobId,
+      responsePartnerParams?.job_id,
+      responsePartnerParams?.jobId,
+      partnerJobId,
     ) || `smile-${Date.now()}`;
 
   const resolvedSmileJobId = pickString(

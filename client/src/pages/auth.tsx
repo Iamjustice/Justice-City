@@ -108,9 +108,7 @@ export default function AuthPage() {
       <Card className="w-full max-w-md shadow-xl border-slate-200 overflow-hidden">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
-            <div className="rounded-xl border border-slate-200 bg-white px-4 py-2 shadow-sm">
-              <BrandLogo className="h-8 w-auto max-w-[180px]" />
-            </div>
+            <BrandLogo className="h-8 w-auto max-w-[180px]" />
           </div>
           <CardTitle className="text-2xl font-display font-bold">
             {isSignUp ? "Create an account" : "Welcome back"}
