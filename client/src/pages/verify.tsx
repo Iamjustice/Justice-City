@@ -35,6 +35,9 @@ export default function VerificationPage() {
   const [verifyBlockedSec, setVerifyBlockedSec] = useState(0);
   const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
+  const [utilityBillDocument, setUtilityBillDocument] = useState<File | null>(null);
+  const [homeAddress, setHomeAddress] = useState("");
+  const [officeAddress, setOfficeAddress] = useState("");
   const [isSavingDocument, setIsSavingDocument] = useState(false);
   const [verificationId, setVerificationId] = useState("");
   const [isStatusPolling, setIsStatusPolling] = useState(false);
@@ -50,6 +53,19 @@ export default function VerificationPage() {
 
   const normalizePhone = (value: string): string => value.replace(/\s+/g, "").trim();
   const normalizeEmail = (value: string): string => value.trim().toLowerCase();
+  const readFileAsDataUrl = (file: File): Promise<string> =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string") {
+          reject(new Error("Failed to read selected document."));
+          return;
+        }
+        resolve(reader.result);
+      };
+      reader.onerror = () => reject(new Error("Failed to read selected document."));
+      reader.readAsDataURL(file);
+    });
 
   useEffect(() => {
     if (!user?.email) return;
@@ -469,10 +485,27 @@ export default function VerificationPage() {
   };
 
   const handleContinueToBiometric = async () => {
+    if (!homeAddress.trim()) {
+      toast({
+        title: "Home address required",
+        description: "Enter your current residential address before continuing.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!selectedDocument) {
       toast({
         title: "Upload required",
         description: "Please choose your ID document before continuing.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!utilityBillDocument) {
+      toast({
+        title: "Utility bill required",
+        description: "Upload a recent utility bill before continuing.",
         variant: "destructive",
       });
       return;
@@ -488,34 +521,40 @@ export default function VerificationPage() {
 
     setIsSavingDocument(true);
     try {
-      const contentBase64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result !== "string") {
-            reject(new Error("Failed to read selected document."));
-            return;
-          }
-          resolve(reader.result);
-        };
-        reader.onerror = () => reject(new Error("Failed to read selected document."));
-        reader.readAsDataURL(selectedDocument);
-      });
+      const normalizedHomeAddress = homeAddress.trim();
+      const normalizedOfficeAddress = officeAddress.trim();
+      const identityContentBase64 = await readFileAsDataUrl(selectedDocument);
+      const utilityBillContentBase64 = await readFileAsDataUrl(utilityBillDocument);
 
-      const uploaded = await uploadVerificationDocument({
+      const uploadedIdentity = await uploadVerificationDocument({
         userId: user.id,
         documentType: "identity",
         fileName: selectedDocument.name,
         mimeType: selectedDocument.type || undefined,
         fileSizeBytes: selectedDocument.size,
-        contentBase64,
+        contentBase64: identityContentBase64,
         verificationId: verificationId || undefined,
+        homeAddress: normalizedHomeAddress,
+        officeAddress: normalizedOfficeAddress || undefined,
       });
 
-      setVerificationId(uploaded.verificationId);
+      const uploadedUtilityBill = await uploadVerificationDocument({
+        userId: user.id,
+        documentType: "utility_bill",
+        fileName: utilityBillDocument.name,
+        mimeType: utilityBillDocument.type || undefined,
+        fileSizeBytes: utilityBillDocument.size,
+        contentBase64: utilityBillContentBase64,
+        verificationId: uploadedIdentity.verificationId || verificationId || undefined,
+        homeAddress: normalizedHomeAddress,
+        officeAddress: normalizedOfficeAddress || undefined,
+      });
+
+      setVerificationId(uploadedUtilityBill.verificationId || uploadedIdentity.verificationId);
       setStep(3);
       toast({
-        title: "Document captured",
-        description: "Document uploaded securely. Continue with biometric scan.",
+        title: "Documents captured",
+        description: "ID and utility bill uploaded securely. Continue with biometric scan.",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to upload verification document.";
@@ -737,20 +776,42 @@ export default function VerificationPage() {
           {step === 2 && (
             <div className="space-y-6 text-center">
               <div className="space-y-2">
-                <h3 className="text-lg font-semibold">Step 2: Upload Government ID</h3>
-                <p className="text-slate-500 text-sm">Identity document, International Passport, or Driver's License</p>
+                <h3 className="text-lg font-semibold">Step 2: Address + Document Upload</h3>
+                <p className="text-slate-500 text-sm">
+                  Enter your address, upload your government ID, and upload a recent utility bill.
+                </p>
+              </div>
+              <div className="grid gap-4 text-left">
+                <div className="space-y-2">
+                  <Label htmlFor="home-address">Home Address</Label>
+                  <Input
+                    id="home-address"
+                    placeholder="Street, area, city, state"
+                    value={homeAddress}
+                    onChange={(event) => setHomeAddress(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="office-address">Office Address (Optional)</Label>
+                  <Input
+                    id="office-address"
+                    placeholder="Office street, area, city, state"
+                    value={officeAddress}
+                    onChange={(event) => setOfficeAddress(event.target.value)}
+                  />
+                </div>
               </div>
               <label
                 htmlFor="verification-document"
-                className="block border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:border-blue-400 transition-colors cursor-pointer group"
+                className="block border-2 border-dashed border-slate-200 rounded-2xl p-8 hover:border-blue-400 transition-colors cursor-pointer group"
               >
                 <div className="flex flex-col items-center gap-4">
-                  <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
-                    <Upload className="w-8 h-8 text-blue-600" />
+                  <div className="w-14 h-14 bg-blue-50 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                    <Upload className="w-7 h-7 text-blue-600" />
                   </div>
                   <div className="space-y-1">
-                    <p className="font-semibold text-slate-900">Click to upload or drag and drop</p>
-                    <p className="text-xs text-slate-500">PNG, JPG or PDF (max. 5MB)</p>
+                    <p className="font-semibold text-slate-900">Upload Government ID</p>
+                    <p className="text-xs text-slate-500">Passport, Driver's License, National ID (max. 10MB)</p>
                     {selectedDocument ? (
                       <p className="text-xs text-green-700 font-medium">Selected: {selectedDocument.name}</p>
                     ) : null}
@@ -767,10 +828,37 @@ export default function VerificationPage() {
                   }}
                 />
               </label>
+              <label
+                htmlFor="verification-utility-bill"
+                className="block border-2 border-dashed border-slate-200 rounded-2xl p-8 hover:border-blue-400 transition-colors cursor-pointer group"
+              >
+                <div className="flex flex-col items-center gap-4">
+                  <div className="w-14 h-14 bg-blue-50 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                    <Upload className="w-7 h-7 text-blue-600" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-semibold text-slate-900">Upload Utility Bill</p>
+                    <p className="text-xs text-slate-500">Electricity, Water, Waste, or similar (max. 10MB)</p>
+                    {utilityBillDocument ? (
+                      <p className="text-xs text-green-700 font-medium">Selected: {utilityBillDocument.name}</p>
+                    ) : null}
+                  </div>
+                </div>
+                <input
+                  id="verification-utility-bill"
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp,.pdf"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setUtilityBillDocument(file);
+                  }}
+                />
+              </label>
               <Button
                 onClick={handleContinueToBiometric}
                 className="w-full bg-blue-600"
-                disabled={!selectedDocument || isSavingDocument}
+                disabled={!homeAddress.trim() || !selectedDocument || !utilityBillDocument || isSavingDocument}
               >
                 {isSavingDocument ? "Saving..." : "Continue"}
               </Button>
@@ -783,9 +871,10 @@ export default function VerificationPage() {
                 <h3 className="text-lg font-semibold">Step 3: Biometric Liveness Check</h3>
                 <p className="text-slate-500 text-sm">Position your face within the frame to confirm identity</p>
               </div>
-              <div className="w-64 h-64 bg-slate-900 rounded-full mx-auto overflow-hidden relative border-4 border-blue-500/30">
-                <div className="absolute inset-0 bg-gradient-to-b from-blue-500/10 to-transparent"></div>
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-64 border-2 border-white/20 rounded-[40%]"></div>
+              <div className="w-64 h-64 rounded-full mx-auto border-4 border-blue-200 bg-white/80 shadow-inner flex items-center justify-center">
+                <div className="w-44 h-44 rounded-full bg-slate-50 border border-slate-200 flex items-center justify-center px-6">
+                  <BrandLogo className="h-12 w-auto max-w-[160px]" />
+                </div>
               </div>
               {statusMessage ? (
                 <p className="text-sm text-slate-500">{statusMessage}</p>

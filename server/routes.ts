@@ -92,6 +92,12 @@ const CONVERSATION_TRANSCRIPTS_TABLE =
   process.env.SUPABASE_CONVERSATION_TRANSCRIPTS_TABLE || "conversation_transcripts";
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
 const VERIFICATIONS_TABLE = process.env.SUPABASE_VERIFICATIONS_TABLE || "verifications";
+const LISTINGS_TABLE = process.env.SUPABASE_LISTINGS_TABLE || "listings";
+const LISTING_IMAGES_TABLE = process.env.SUPABASE_LISTING_IMAGES_TABLE || "listing_images";
+const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || "listing_documents";
+const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
+const PROPERTY_DOCUMENTS_BUCKET =
+  process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
 
 function createSupabaseServiceClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
@@ -970,6 +976,251 @@ export async function registerRoutes(
       if (message.startsWith("FORBIDDEN:")) {
         return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
       }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/agent/listings/:listingId/assets", async (req: Request, res: Response) => {
+    try {
+      const listingId = String(req.params?.listingId ?? "").trim();
+      const actorId = String(req.body?.actorId ?? "").trim();
+      const actorRole = String(req.body?.actorRole ?? "")
+        .trim()
+        .toLowerCase();
+      const actorName = String(req.body?.actorName ?? "").trim();
+
+      if (!listingId) {
+        return res.status(400).json({ message: "listingId is required" });
+      }
+      if (!actorId) {
+        return res.status(400).json({ message: "actorId is required" });
+      }
+
+      type UploadFilePayload = {
+        fileName: string;
+        contentBase64: string;
+        mimeType: string;
+        fileSizeBytes?: number;
+      };
+
+      const toUploadFiles = (value: unknown): UploadFilePayload[] => {
+        if (!Array.isArray(value)) return [];
+        const files: UploadFilePayload[] = [];
+        for (const item of value) {
+          if (typeof item !== "object" || item === null) continue;
+          const payload = item as Record<string, unknown>;
+          const fileName = String(payload.fileName ?? "").trim();
+          const contentBase64 = String(payload.contentBase64 ?? "").trim();
+          const mimeType = String(payload.mimeType ?? "").trim() || "application/octet-stream";
+          const fileSizeBytes =
+            typeof payload.fileSizeBytes === "number" && Number.isFinite(payload.fileSizeBytes)
+              ? Math.max(0, Math.trunc(payload.fileSizeBytes))
+              : undefined;
+
+          if (!fileName || !contentBase64) continue;
+          files.push({
+            fileName,
+            contentBase64,
+            mimeType,
+            fileSizeBytes,
+          });
+        }
+        return files;
+      };
+
+      const propertyDocuments = toUploadFiles(req.body?.propertyDocuments);
+      const ownershipAuthorizationDocuments = toUploadFiles(req.body?.ownershipAuthorizationDocuments);
+      const images = toUploadFiles(req.body?.images);
+
+      if (
+        propertyDocuments.length === 0 &&
+        ownershipAuthorizationDocuments.length === 0 &&
+        images.length === 0
+      ) {
+        return res.status(400).json({ message: "At least one asset file is required." });
+      }
+
+      if (images.length > 10) {
+        return res.status(400).json({ message: "You can upload at most 10 property images." });
+      }
+
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase storage is not configured on server." });
+      }
+
+      const { data: listingRow, error: listingError } = await client
+        .from(LISTINGS_TABLE)
+        .select("id, agent_id")
+        .eq("id", listingId)
+        .maybeSingle<{ id: string; agent_id: string | null }>();
+
+      if (listingError && isMissingTableOrColumnError(listingError)) {
+        return res.status(503).json({
+          message:
+            "Listings table is not fully configured. Run supabase/agent_roles_listings_storage.sql and retry.",
+        });
+      }
+      if (listingError && !isMissingTableOrColumnError(listingError)) {
+        return res.status(502).json({ message: `Failed to load listing: ${listingError.message}` });
+      }
+      if (!listingRow) {
+        return res.status(404).json({ message: "Listing not found." });
+      }
+
+      let isAdmin = actorRole === "admin";
+      if (!isAdmin) {
+        const { data: actorRow, error: actorError } = await client
+          .from(USERS_TABLE)
+          .select("role")
+          .eq("id", actorId)
+          .maybeSingle<{ role: string | null }>();
+        if (actorError && !isMissingTableOrColumnError(actorError)) {
+          return res.status(502).json({ message: `Failed to verify actor role: ${actorError.message}` });
+        }
+        const roleFromDb = String(actorRow?.role ?? "").trim().toLowerCase();
+        isAdmin = roleFromDb === "admin";
+      }
+
+      if (!isAdmin && String(listingRow.agent_id ?? "").trim() !== actorId) {
+        return res.status(403).json({ message: "You can only upload files for your own listing." });
+      }
+
+      if (actorName || actorRole) {
+        await ensurePublicUserRow(client, {
+          id: actorId,
+          email: null,
+          user_metadata: {
+            role: actorRole || undefined,
+            full_name: actorName || undefined,
+          },
+        });
+      }
+
+      const decodeBase64File = (content: string): Buffer => {
+        const normalized = content.includes(",") ? content.split(",").pop() ?? "" : content;
+        return Buffer.from(normalized, "base64");
+      };
+
+      const uploadDocumentSet = async (
+        files: UploadFilePayload[],
+        documentType: "title_document" | "ownership_authorization",
+      ): Promise<number> => {
+        let uploadedCount = 0;
+        for (const file of files) {
+          const safeName = sanitizeStorageFileName(file.fileName);
+          const storagePath = `listings/${listingId}/documents/${Date.now()}-${randomUUID()}-${safeName}`;
+          const fileBuffer = decodeBase64File(file.contentBase64);
+
+          if (fileBuffer.length === 0) {
+            throw new Error(`File "${file.fileName}" is empty.`);
+          }
+          if (fileBuffer.length > 20 * 1024 * 1024) {
+            throw new Error(`File "${file.fileName}" exceeds the 20MB upload limit.`);
+          }
+
+          const { error: uploadError } = await client.storage.from(PROPERTY_DOCUMENTS_BUCKET).upload(
+            storagePath,
+            fileBuffer,
+            {
+              contentType: file.mimeType,
+              upsert: false,
+            },
+          );
+          if (uploadError) {
+            throw new Error(`Failed to upload "${file.fileName}": ${uploadError.message}`);
+          }
+
+          const publicUrlData = client.storage.from(PROPERTY_DOCUMENTS_BUCKET).getPublicUrl(storagePath).data;
+          const { error: insertError } = await client.from(LISTING_DOCUMENTS_TABLE).insert({
+            listing_id: listingId,
+            document_type: documentType,
+            file_path: storagePath,
+            public_url: String(publicUrlData?.publicUrl ?? "").trim() || null,
+            uploaded_by: actorId,
+          });
+
+          if (insertError) {
+            throw new Error(`Failed to save document metadata: ${insertError.message}`);
+          }
+          uploadedCount += 1;
+        }
+        return uploadedCount;
+      };
+
+      const existingImageCountResponse = await client
+        .from(LISTING_IMAGES_TABLE)
+        .select("id", { count: "exact", head: true })
+        .eq("listing_id", listingId);
+      if (existingImageCountResponse.error && !isMissingTableOrColumnError(existingImageCountResponse.error)) {
+        return res.status(502).json({
+          message: `Failed to read existing listing image metadata: ${existingImageCountResponse.error.message}`,
+        });
+      }
+      const existingImageCount = Number(existingImageCountResponse.count ?? 0);
+
+      let imagesUploaded = 0;
+      for (let index = 0; index < images.length; index += 1) {
+        const image = images[index];
+        const safeName = sanitizeStorageFileName(image.fileName);
+        const storagePath = `listings/${listingId}/images/${Date.now()}-${randomUUID()}-${safeName}`;
+        const fileBuffer = decodeBase64File(image.contentBase64);
+
+        if (fileBuffer.length === 0) {
+          throw new Error(`File "${image.fileName}" is empty.`);
+        }
+        if (fileBuffer.length > 20 * 1024 * 1024) {
+          throw new Error(`File "${image.fileName}" exceeds the 20MB upload limit.`);
+        }
+
+        const { error: uploadError } = await client.storage.from(PROPERTY_IMAGES_BUCKET).upload(
+          storagePath,
+          fileBuffer,
+          {
+            contentType: image.mimeType,
+            upsert: false,
+          },
+        );
+        if (uploadError) {
+          throw new Error(`Failed to upload "${image.fileName}": ${uploadError.message}`);
+        }
+
+        const publicUrlData = client.storage.from(PROPERTY_IMAGES_BUCKET).getPublicUrl(storagePath).data;
+        const { error: insertError } = await client.from(LISTING_IMAGES_TABLE).insert({
+          listing_id: listingId,
+          file_path: storagePath,
+          public_url: String(publicUrlData?.publicUrl ?? "").trim() || null,
+          is_cover: existingImageCount === 0 && index === 0,
+          sort_order: existingImageCount + index,
+          uploaded_by: actorId,
+        });
+
+        if (insertError) {
+          throw new Error(`Failed to save image metadata: ${insertError.message}`);
+        }
+        imagesUploaded += 1;
+      }
+
+      const propertyDocumentsUploaded = await uploadDocumentSet(propertyDocuments, "title_document");
+      const ownershipAuthorizationUploaded = await uploadDocumentSet(
+        ownershipAuthorizationDocuments,
+        "ownership_authorization",
+      );
+
+      return res.status(200).json({
+        listingId,
+        propertyDocumentsUploaded,
+        ownershipAuthorizationUploaded,
+        imagesUploaded,
+      });
+    } catch (error) {
+      if (isMissingTableOrColumnError(error)) {
+        return res.status(503).json({
+          message:
+            "Listing upload metadata is not fully configured. Run supabase/agent_roles_listings_storage.sql and ensure storage buckets exist.",
+        });
+      }
+      const message = error instanceof Error ? error.message : "Failed to upload listing assets";
       return res.status(502).json({ message });
     }
   });
@@ -2972,10 +3223,20 @@ export async function registerRoutes(
       const mimeType = String(req.body?.mimeType ?? "").trim();
       const contentBase64 = String(req.body?.contentBase64 ?? "").trim();
       const verificationId = String(req.body?.verificationId ?? "").trim();
+      const homeAddressRaw = req.body?.homeAddress;
+      const officeAddressRaw = req.body?.officeAddress;
       const fileSizeRaw = req.body?.fileSizeBytes;
       const fileSizeBytes =
         typeof fileSizeRaw === "number" && Number.isFinite(fileSizeRaw)
           ? Math.max(0, Math.trunc(fileSizeRaw))
+          : undefined;
+      const homeAddress =
+        typeof homeAddressRaw === "string" && homeAddressRaw.trim().length > 0
+          ? homeAddressRaw.trim()
+          : undefined;
+      const officeAddress =
+        typeof officeAddressRaw === "string" && officeAddressRaw.trim().length > 0
+          ? officeAddressRaw.trim()
           : undefined;
 
       if (!userId) {
@@ -2987,6 +3248,12 @@ export async function registerRoutes(
       if (!contentBase64) {
         return res.status(400).json({ message: "contentBase64 is required" });
       }
+      if (homeAddress && homeAddress.length > 500) {
+        return res.status(400).json({ message: "homeAddress must be 500 characters or fewer." });
+      }
+      if (officeAddress && officeAddress.length > 500) {
+        return res.status(400).json({ message: "officeAddress must be 500 characters or fewer." });
+      }
 
       const uploaded = await uploadVerificationDocument({
         userId,
@@ -2996,6 +3263,8 @@ export async function registerRoutes(
         fileSizeBytes,
         contentBase64,
         verificationId: verificationId || undefined,
+        homeAddress,
+        officeAddress,
       });
 
       return res.status(201).json(uploaded);

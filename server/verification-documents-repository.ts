@@ -30,6 +30,8 @@ type UploadVerificationDocumentInput = {
   fileSizeBytes?: number;
   contentBase64: string;
   verificationId?: string;
+  homeAddress?: string;
+  officeAddress?: string;
 };
 
 type UploadVerificationDocumentResult = {
@@ -84,6 +86,14 @@ function normalizeDocumentType(rawValue: string): string {
     .replace(/^_+|_+$/g, "");
 
   return value || "identity";
+}
+
+function normalizeAddress(rawValue: unknown): string | undefined {
+  const normalized = String(rawValue ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!normalized) return undefined;
+  return normalized.slice(0, 500);
 }
 
 function parseBase64Payload(input: string): Base64Payload {
@@ -175,6 +185,37 @@ async function ensureVerificationRecord(
   return String(created.id);
 }
 
+async function persistVerificationAddressDetails(
+  client: SupabaseClient,
+  input: {
+    verificationId: string;
+    userId: string;
+    homeAddress?: string;
+    officeAddress?: string;
+  },
+): Promise<void> {
+  const updates: Record<string, string | null> = {};
+  if (typeof input.homeAddress === "string" && input.homeAddress.trim().length > 0) {
+    updates.home_address = input.homeAddress.trim();
+  }
+  if (typeof input.officeAddress === "string" && input.officeAddress.trim().length > 0) {
+    updates.office_address = input.officeAddress.trim();
+  }
+
+  if (Object.keys(updates).length === 0) return;
+
+  const { error } = await client
+    .from(VERIFICATIONS_TABLE)
+    .update(updates)
+    .eq("id", input.verificationId)
+    .eq("user_id", input.userId);
+
+  if (!error) return;
+  if (isMissingTableOrColumnError(error)) return;
+
+  throw new Error(`Failed to save verification address details: ${error.message}`);
+}
+
 function resolveMimeType(
   providedMimeType: string | undefined,
   payloadMimeType: string | undefined,
@@ -204,6 +245,8 @@ export async function uploadVerificationDocument(
     typeof input.fileSizeBytes === "number" && Number.isFinite(input.fileSizeBytes)
       ? Math.max(0, Math.trunc(input.fileSizeBytes))
       : undefined;
+  const homeAddress = normalizeAddress(input.homeAddress);
+  const officeAddress = normalizeAddress(input.officeAddress);
 
   if (!userId) {
     throw new Error("userId is required.");
@@ -237,6 +280,12 @@ export async function uploadVerificationDocument(
   }
 
   const verificationId = await ensureVerificationRecord(client, userId, input.verificationId);
+  await persistVerificationAddressDetails(client, {
+    verificationId,
+    userId,
+    homeAddress,
+    officeAddress,
+  });
   const storagePath = `${userId}/${verificationId}/${Date.now()}_${sanitizeStorageFileName(fileName)}`;
 
   const { error: uploadError } = await client.storage
@@ -311,4 +360,3 @@ export async function uploadVerificationDocument(
     previewUrl,
   };
 }
-

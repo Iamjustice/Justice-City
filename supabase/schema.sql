@@ -44,6 +44,8 @@ create table if not exists public.verifications (
   job_id text not null unique,
   smile_job_id text,
   message text,
+  home_address text,
+  office_address text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

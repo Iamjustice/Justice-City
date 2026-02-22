@@ -52,7 +52,7 @@ import { MOCK_PROPERTIES } from "@/lib/mock-data";
 import { PropertyCard } from "@/components/property-card";
 import ModernAdminDashboardView from "@/components/admin-dashboard-view";
 import ModernAgentDashboardView from "@/components/agent-dashboard-view";
-import { createAgentListing } from "@/lib/agent-listings";
+import { createAgentListing, uploadAgentListingAssets } from "@/lib/agent-listings";
 
 export default function Dashboard() {
   const { user, isLoading } = useAuth();
@@ -70,6 +70,23 @@ export default function Dashboard() {
     location: "",
     description: "",
   });
+  const [propertyDocumentFiles, setPropertyDocumentFiles] = useState<File[]>([]);
+  const [ownershipAuthorizationFiles, setOwnershipAuthorizationFiles] = useState<File[]>([]);
+  const [propertyImageFiles, setPropertyImageFiles] = useState<File[]>([]);
+
+  const mergeUniqueFiles = (existing: File[], incoming: File[], maxCount: number): File[] => {
+    const next = [...existing];
+    for (const file of incoming) {
+      const fingerprint = `${file.name}:${file.size}:${file.lastModified}`;
+      const exists = next.some(
+        (item) => `${item.name}:${item.size}:${item.lastModified}` === fingerprint,
+      );
+      if (exists) continue;
+      if (next.length >= maxCount) break;
+      next.push(file);
+    }
+    return next;
+  };
 
   useEffect(() => {
     if (isLoading) return;
@@ -275,6 +292,9 @@ export default function Dashboard() {
       location: "",
       description: "",
     });
+    setPropertyDocumentFiles([]);
+    setOwnershipAuthorizationFiles([]);
+    setPropertyImageFiles([]);
   };
 
   const submitListingForReview = async () => {
@@ -286,6 +306,42 @@ export default function Dashboard() {
       toast({
         title: "Missing listing details",
         description: "Title, price, and location are required before submission.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (propertyDocumentFiles.length === 0) {
+      toast({
+        title: "Property documents required",
+        description: "Upload at least one title document (C of O, Survey Plan, or Deed).",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (ownershipAuthorizationFiles.length === 0) {
+      toast({
+        title: "Ownership authorization required",
+        description: "Upload at least one letter of authorization from the owner.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (propertyImageFiles.length === 0) {
+      toast({
+        title: "Property images required",
+        description: "Upload at least one image before submitting.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (propertyImageFiles.length > 10) {
+      toast({
+        title: "Too many images",
+        description: "You can upload a maximum of 10 property images.",
         variant: "destructive",
       });
       return;
@@ -319,6 +375,38 @@ export default function Dashboard() {
         },
       );
 
+      let uploadSummary:
+        | {
+            propertyDocumentsUploaded: number;
+            ownershipAuthorizationUploaded: number;
+            imagesUploaded: number;
+          }
+        | null = null;
+
+      try {
+        uploadSummary = await uploadAgentListingAssets(
+          String(created.id),
+          {
+            propertyDocuments: propertyDocumentFiles,
+            ownershipAuthorizationDocuments: ownershipAuthorizationFiles,
+            images: propertyImageFiles,
+          },
+          {
+            actorId,
+            actorRole: user?.role ?? undefined,
+            actorName: user?.name ?? undefined,
+          },
+        );
+      } catch (uploadError) {
+        const uploadMessage =
+          uploadError instanceof Error ? uploadError.message : "Listing was created but files failed to upload.";
+        toast({
+          title: "Listing created, upload failed",
+          description: uploadMessage,
+          variant: "destructive",
+        });
+      }
+
       const verificationStatus =
         created.status === "Published" || created.status === "Sold" || created.status === "Rented"
           ? "Published"
@@ -338,7 +426,9 @@ export default function Dashboard() {
 
       toast({
         title: "Listing submitted",
-        description: `${title} has been submitted for verification review.`,
+        description: uploadSummary
+          ? `${title} submitted. Uploaded ${uploadSummary.propertyDocumentsUploaded} property docs, ${uploadSummary.ownershipAuthorizationUploaded} authorization docs, and ${uploadSummary.imagesUploaded} images.`
+          : `${title} has been submitted for verification review.`,
       });
 
       resetCreateListingForm();
@@ -510,23 +600,86 @@ export default function Dashboard() {
             <div className="space-y-4">
               <Label className="text-base font-bold">Required Documentation</Label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50">
+                <label
+                  htmlFor="property-documents-upload"
+                  className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50 block"
+                >
                   <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
                   <p className="text-sm font-semibold text-slate-900">Upload Property Documents</p>
                   <p className="text-xs text-slate-500 mt-1">C of O, Survey Plan, or Deed</p>
-                </div>
-                <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50">
+                  <p className="text-xs text-blue-700 mt-2">
+                    {propertyDocumentFiles.length > 0
+                      ? `${propertyDocumentFiles.length} file(s) selected`
+                      : "Click to upload"}
+                  </p>
+                  <input
+                    id="property-documents-upload"
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.webp"
+                    className="hidden"
+                    multiple
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      setPropertyDocumentFiles((current) => mergeUniqueFiles(current, files, 5));
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+                <label
+                  htmlFor="ownership-authorization-upload"
+                  className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:border-blue-400 transition-colors cursor-pointer group bg-slate-50/50 block"
+                >
                   <ShieldCheck className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
                   <p className="text-sm font-semibold text-slate-900">Ownership Authorization</p>
                   <p className="text-xs text-slate-500 mt-1">Letter of Authorization from Owner</p>
-                </div>
+                  <p className="text-xs text-blue-700 mt-2">
+                    {ownershipAuthorizationFiles.length > 0
+                      ? `${ownershipAuthorizationFiles.length} file(s) selected`
+                      : "Click to upload"}
+                  </p>
+                  <input
+                    id="ownership-authorization-upload"
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.webp"
+                    className="hidden"
+                    multiple
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      setOwnershipAuthorizationFiles((current) =>
+                        mergeUniqueFiles(current, files, 5),
+                      );
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
               </div>
             </div>
-            <div className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center hover:border-blue-400 transition-colors cursor-pointer group">
+            <label
+              htmlFor="property-images-upload"
+              className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center hover:border-blue-400 transition-colors cursor-pointer group block"
+            >
               <Plus className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:text-blue-500 transition-colors" />
               <p className="text-sm font-semibold text-slate-900">Upload Property Images</p>
               <p className="text-xs text-slate-500 mt-1">Add up to 10 high-quality photos</p>
-            </div>
+              <p className="text-xs text-blue-700 mt-2">
+                {propertyImageFiles.length > 0
+                  ? `${propertyImageFiles.length}/10 image(s) selected`
+                  : "Click to upload"}
+              </p>
+              <input
+                id="property-images-upload"
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                className="hidden"
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+                  setPropertyImageFiles((current) => mergeUniqueFiles(current, imageFiles, 10));
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
           </div>
           <DialogFooter>
             <Button

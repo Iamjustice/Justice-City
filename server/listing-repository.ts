@@ -209,6 +209,31 @@ function toDbStatus(status: AgentListingStatus | string): DbListingStatus {
   return "draft";
 }
 
+function assertStatusChangeAllowedForActor(
+  nextStatus: DbListingStatus,
+  options: {
+    isAdmin: boolean;
+    currentStatus?: DbListingStatus | null;
+  },
+): void {
+  if (options.isAdmin) return;
+
+  const currentStatus = options.currentStatus ?? null;
+
+  if (nextStatus === "published" && currentStatus !== "published") {
+    throwForbidden("Only admins can approve and publish listings.");
+  }
+
+  if (
+    (nextStatus === "sold" || nextStatus === "rented") &&
+    currentStatus !== "published" &&
+    currentStatus !== "sold" &&
+    currentStatus !== "rented"
+  ) {
+    throwForbidden("Only published listings can be marked as sold or rented.");
+  }
+}
+
 function toUiListingType(value: string | null | undefined): "Sale" | "Rent" {
   return String(value ?? "")
     .trim()
@@ -573,7 +598,7 @@ async function ensureActorAuthorized(
     roleFromDb = await getUserRole(client, actorId);
   }
 
-  const isAdmin = isAdminRole(roleFromDb ?? undefined);
+  const isAdmin = isAdminRole(roleFromDb ?? actor.actorRole ?? undefined);
   if (isAdmin) return { actorId, isAdmin: true };
 
   if (listingAgentIdRaw !== actorId) {
@@ -679,7 +704,11 @@ export async function updateAgentListingStatus(
       throw new Error("Listing was not found.");
     }
 
-    await ensureActorAuthorized(actor, existing.agentId || actorId);
+    const { isAdmin } = await ensureActorAuthorized(actor, existing.agentId || actorId);
+    assertStatusChangeAllowedForActor(normalizedStatus, {
+      isAdmin,
+      currentStatus: toDbStatus(existing.status),
+    });
     const updated = applyFallbackStatusUpdate(existing, toUiStatus(normalizedStatus));
     setFallbackListing({ ...updated, agentId: existing.agentId });
     if (nextStatus === "Sold" || nextStatus === "Rented") {
@@ -697,6 +726,11 @@ export async function updateAgentListingStatus(
     if (!listing) {
       const fallback = getFallbackListingById(listingId);
       if (fallback) {
+        const { isAdmin } = await ensureActorAuthorized(actor, fallback.agentId || actorId);
+        assertStatusChangeAllowedForActor(normalizedStatus, {
+          isAdmin,
+          currentStatus: toDbStatus(fallback.status),
+        });
         const updated = applyFallbackStatusUpdate(fallback, toUiStatus(normalizedStatus));
         setFallbackListing({ ...updated, agentId: fallback.agentId });
         return updated;
@@ -704,7 +738,11 @@ export async function updateAgentListingStatus(
       throw new Error("Listing was not found.");
     }
 
-    await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    const { isAdmin } = await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    assertStatusChangeAllowedForActor(normalizedStatus, {
+      isAdmin,
+      currentStatus: toDbStatus(String(listing.status ?? "draft")),
+    });
 
     const { error: updateError } = await client
       .from(LISTINGS_TABLE)
@@ -744,6 +782,11 @@ export async function updateAgentListingStatus(
       if (!fallback) {
         throw new Error("Listing was not found.");
       }
+      const { isAdmin } = await ensureActorAuthorized(actor, fallback.agentId || actorId);
+      assertStatusChangeAllowedForActor(normalizedStatus, {
+        isAdmin,
+        currentStatus: toDbStatus(fallback.status),
+      });
       const updated = applyFallbackStatusUpdate(fallback, toUiStatus(normalizedStatus));
       setFallbackListing({ ...updated, agentId: fallback.agentId });
       return updated;
@@ -844,6 +887,12 @@ export async function createAgentListing(
   }
 
   if (!client) {
+    const isAdmin = isAdminRole(actor.actorRole);
+    assertStatusChangeAllowedForActor(requestedStatus, {
+      isAdmin,
+      currentStatus: null,
+    });
+
     const fallbackListing: FallbackListingRecord = {
       id: buildFallbackListingId(),
       title,
@@ -870,6 +919,11 @@ export async function createAgentListing(
     if (!canCreateListing(roleFromDb ?? undefined)) {
       throwForbidden("Only agents, sellers, owners, or admins can create listings.");
     }
+    const isAdmin = isAdminRole(roleFromDb ?? undefined);
+    assertStatusChangeAllowedForActor(requestedStatus, {
+      isAdmin,
+      currentStatus: null,
+    });
 
     const { data, error } = await client
       .from(LISTINGS_TABLE)
@@ -963,7 +1017,11 @@ export async function updateAgentListing(
     if (!existing) {
       throw new Error("Listing was not found.");
     }
-    await ensureActorAuthorized(actor, existing.agentId || actorId);
+    const { isAdmin } = await ensureActorAuthorized(actor, existing.agentId || actorId);
+    assertStatusChangeAllowedForActor(requestedStatus, {
+      isAdmin,
+      currentStatus: toDbStatus(existing.status),
+    });
 
     const updatedStatus = toUiStatus(requestedStatus);
     const updated: AgentListingRecord = {
@@ -1008,7 +1066,11 @@ export async function updateAgentListing(
       throw new Error("Listing was not found.");
     }
 
-    await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    const { isAdmin } = await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    assertStatusChangeAllowedForActor(requestedStatus, {
+      isAdmin,
+      currentStatus: toDbStatus(String(listing.status ?? "draft")),
+    });
 
     const { error: updateError } = await client
       .from(LISTINGS_TABLE)
@@ -1050,7 +1112,11 @@ export async function updateAgentListing(
       if (!existing) {
         throw new Error("Listing was not found.");
       }
-      await ensureActorAuthorized(actor, existing.agentId || actorId);
+      const { isAdmin } = await ensureActorAuthorized(actor, existing.agentId || actorId);
+      assertStatusChangeAllowedForActor(requestedStatus, {
+        isAdmin,
+        currentStatus: toDbStatus(existing.status),
+      });
 
       const updatedStatus = toUiStatus(requestedStatus);
       const updated: AgentListingRecord = {

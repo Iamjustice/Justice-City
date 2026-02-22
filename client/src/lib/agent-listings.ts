@@ -38,11 +38,60 @@ export type UpsertAgentListingInput = {
   status?: AgentListingStatus;
 };
 
+type ListingUploadFileInput = {
+  fileName: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  contentBase64: string;
+};
+
+export type UploadListingAssetsInput = {
+  propertyDocuments?: File[];
+  ownershipAuthorizationDocuments?: File[];
+  images?: File[];
+};
+
+export type UploadListingAssetsResult = {
+  propertyDocumentsUploaded: number;
+  ownershipAuthorizationUploaded: number;
+  imagesUploaded: number;
+  listingId: string;
+};
+
 type ListingActor = {
   actorId: string;
   actorRole?: string;
   actorName?: string;
 };
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error(`Failed to read "${file.name}".`));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.onerror = () => reject(new Error(`Failed to read "${file.name}".`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function toUploadFiles(files: File[] | undefined): Promise<ListingUploadFileInput[]> {
+  const source = Array.isArray(files) ? files : [];
+  if (source.length === 0) return [];
+
+  return Promise.all(
+    source.map(async (file) => ({
+      fileName: file.name,
+      mimeType: file.type || undefined,
+      fileSizeBytes: Number.isFinite(file.size) ? file.size : undefined,
+      contentBase64: await fileToDataUrl(file),
+    })),
+  );
+}
 
 export async function fetchAgentListings(actor: ListingActor): Promise<AgentListing[]> {
   const params = new URLSearchParams({ actorId: actor.actorId });
@@ -139,6 +188,27 @@ export async function updateAgentListingPayoutStatus(
     actorName: actor.actorName,
     payoutStatus,
   });
+
+  return response.json();
+}
+
+export async function uploadAgentListingAssets(
+  listingId: string,
+  input: UploadListingAssetsInput,
+  actor: ListingActor,
+): Promise<UploadListingAssetsResult> {
+  const response = await apiRequest(
+    "POST",
+    `/api/agent/listings/${encodeURIComponent(listingId)}/assets`,
+    {
+      actorId: actor.actorId,
+      actorRole: actor.actorRole,
+      actorName: actor.actorName,
+      propertyDocuments: await toUploadFiles(input.propertyDocuments),
+      ownershipAuthorizationDocuments: await toUploadFiles(input.ownershipAuthorizationDocuments),
+      images: await toUploadFiles(input.images),
+    },
+  );
 
   return response.json();
 }

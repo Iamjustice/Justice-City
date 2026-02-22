@@ -67,6 +67,8 @@ export interface VerificationDocumentUploadPayload {
   fileSizeBytes?: number;
   contentBase64: string;
   verificationId?: string;
+  homeAddress?: string;
+  officeAddress?: string;
 }
 
 export interface VerificationDocumentUploadResponse {

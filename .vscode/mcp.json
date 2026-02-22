@@ -1,0 +1,9 @@
+{
+	"servers": {
+		"Smile ID": {
+			"url": "https://docs.usesmileid.com/~gitbook/mcp",
+			"type": "http"
+		}
+	},
+	"inputs": []
+}

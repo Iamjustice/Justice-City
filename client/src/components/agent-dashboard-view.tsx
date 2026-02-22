@@ -253,6 +253,28 @@ export default function ModernAgentDashboardView({
     if (!listingOwnerId) return false;
     return listingOwnerId === viewerId;
   };
+  const canTransitionListingStatus = (
+    listing: any,
+    nextStatus: AgentListingStatus,
+  ): { allowed: true } | { allowed: false; reason: string } => {
+    if (isAdmin) return { allowed: true };
+
+    const currentStatus = String(listing?.status ?? "Draft");
+    if (nextStatus === "Published" && currentStatus !== "Published") {
+      return { allowed: false, reason: "Listings can only be published after admin approval." };
+    }
+
+    if (
+      (nextStatus === "Sold" || nextStatus === "Rented") &&
+      currentStatus !== "Published" &&
+      currentStatus !== "Sold" &&
+      currentStatus !== "Rented"
+    ) {
+      return { allowed: false, reason: "Only published listings can be marked sold or rented." };
+    }
+
+    return { allowed: true };
+  };
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [selectedServerConversation, setSelectedServerConversation] =
     useState<ChatConversation | null>(null);
@@ -486,6 +508,17 @@ export default function ModernAgentDashboardView({
       return;
     }
 
+    const requestedStatus = editingForm.status as AgentListingStatus;
+    const statusTransition = canTransitionListingStatus(editingListing, requestedStatus);
+    if (!statusTransition.allowed) {
+      toast({
+        title: "Admin approval required",
+        description: statusTransition.reason,
+        variant: "destructive",
+      });
+      return;
+    }
+
     const actorId = String(user?.id ?? "").trim();
     if (!actorId) {
       toast({
@@ -505,7 +538,7 @@ export default function ModernAgentDashboardView({
           listingType: editingForm.listingType as "Sale" | "Rent",
           location,
           description: editingForm.description.trim() || "No description provided yet.",
-          status: editingForm.status as AgentListingStatus,
+          status: requestedStatus,
           price: editingForm.price,
         },
         {
@@ -550,6 +583,15 @@ export default function ModernAgentDashboardView({
       toast({
         title: "Permission denied",
         description: "You can only update listings you own.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const statusTransition = canTransitionListingStatus(listing, status);
+    if (!statusTransition.allowed) {
+      toast({
+        title: "Admin approval required",
+        description: statusTransition.reason,
         variant: "destructive",
       });
       return;
@@ -767,10 +809,28 @@ export default function ModernAgentDashboardView({
     (step) => step.status === "completed",
   ).length;
   const canPublishFromVerification =
+    isAdmin &&
     Boolean(verificationListing) &&
     selectedVerificationSteps.length > 0 &&
     selectedCompletedChecks === selectedVerificationSteps.length &&
     verificationListing.status !== "Published";
+  const editStatusOptions: AgentListingStatus[] = useMemo(() => {
+    if (isAdmin) {
+      return ["Draft", "Pending Review", "Published", "Sold", "Rented", "Archived"];
+    }
+
+    const currentStatus = String(editingListing?.status ?? editingForm.status ?? "Draft");
+    const options: AgentListingStatus[] = ["Draft", "Pending Review", "Archived"];
+
+    if (currentStatus === "Published") {
+      options.push("Published");
+    }
+    if (currentStatus === "Published" || isClosedDealStatus(currentStatus)) {
+      options.push("Sold", "Rented");
+    }
+
+    return Array.from(new Set(options));
+  }, [editingForm.status, editingListing, isAdmin]);
 
   const getConversationCounterparty = (conversation: ChatConversation) => {
     const selfId = String(user?.id ?? "");
@@ -955,12 +1015,9 @@ export default function ModernAgentDashboardView({
                     setEditingForm((current) => ({ ...current, status: event.target.value }))
                   }
                 >
-                  <option>Draft</option>
-                  <option>Pending Review</option>
-                  <option>Published</option>
-                  <option>Sold</option>
-                  <option>Rented</option>
-                  <option>Archived</option>
+                  {editStatusOptions.map((statusOption) => (
+                    <option key={statusOption}>{statusOption}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1237,7 +1294,7 @@ export default function ModernAgentDashboardView({
                               View Verification Progress
                             </DropdownMenuItem>
                             {canManageListing && <DropdownMenuSeparator />}
-                            {canManageListing && (listing.status !== "Published" ? (
+                            {canManageListing && isAdmin && (listing.status !== "Published" ? (
                               <DropdownMenuItem
                                 disabled={isUpdatingListing}
                                 onClick={() => void setListingStatus(listing, "Published")}
@@ -1254,6 +1311,15 @@ export default function ModernAgentDashboardView({
                                 Move to Draft
                               </DropdownMenuItem>
                             ))}
+                            {canManageListing && !isAdmin && listing.status !== "Pending Review" && (
+                              <DropdownMenuItem
+                                disabled={isUpdatingListing}
+                                onClick={() => void setListingStatus(listing, "Pending Review")}
+                              >
+                                <Clock className="mr-2 h-4 w-4" />
+                                Submit for Review
+                              </DropdownMenuItem>
+                            )}
                             {canManageListing && listing.status === "Published" && (
                               <DropdownMenuItem
                                 disabled={isUpdatingListing}
@@ -1268,7 +1334,7 @@ export default function ModernAgentDashboardView({
                                 Mark Closed Deal
                               </DropdownMenuItem>
                             )}
-                            {canManageListing && isClosedDealStatus(String(listing.status ?? "")) && (
+                            {canManageListing && isAdmin && isClosedDealStatus(String(listing.status ?? "")) && (
                               <DropdownMenuItem
                                 disabled={isUpdatingListing}
                                 onClick={() => void setListingStatus(listing, "Published")}
