@@ -1123,12 +1123,14 @@ export default function ModernAgentDashboardView({
                 <div className="space-y-3">
                   {selectedVerificationSteps.map((step) => (
                     <div key={step.key} className="rounded-lg border border-slate-200 p-3">
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-2">
-                          <Badge className={statusBadgeClass(step.status)}>{toStatusLabel(step.status)}</Badge>
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
                           <p className="font-semibold text-slate-900">{step.label}</p>
+                          <p className="text-sm text-slate-500">{step.description}</p>
                         </div>
-                        <p className="text-sm text-slate-500">{step.description}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className={statusBadgeClass(step.status)}>{toStatusLabel(step.status)}</Badge>
+                        </div>
                       </div>
                     </div>
                   ))}
