@@ -843,6 +843,31 @@ export default function ModernAgentDashboardView({
     }
   };
 
+  const updateVerificationStepStatus = (
+    listing: any,
+    stepKey: string,
+    status: VerificationStepStatus,
+  ) => {
+    if (!canEditVerificationProgress) {
+      toast({
+        title: "Admin action only",
+        description: "Only admins can update property verification check progress.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    mutateListings((current) =>
+      current.map((item) => {
+        if (item.id !== listing.id) return item;
+        const steps = ensureVerificationSteps(item).map((step) =>
+          step.key === stepKey ? { ...step, status } : step,
+        );
+        return { ...item, verificationSteps: steps };
+      }),
+    );
+  };
+
   const selectedVerificationSteps = verificationListing ? ensureVerificationSteps(verificationListing) : [];
   const selectedVerificationProgress = progressValue(selectedVerificationSteps);
   const selectedCompletedChecks = selectedVerificationSteps.filter(
@@ -1130,6 +1155,24 @@ export default function ModernAgentDashboardView({
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className={statusBadgeClass(step.status)}>{toStatusLabel(step.status)}</Badge>
+                          {canEditVerificationProgress && (
+                            <select
+                              className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                              value={step.status}
+                              onChange={(event) =>
+                                updateVerificationStepStatus(
+                                  verificationListing,
+                                  step.key,
+                                  event.target.value as VerificationStepStatus,
+                                )
+                              }
+                            >
+                              <option value="pending">Pending</option>
+                              <option value="in_progress">In Progress</option>
+                              <option value="completed">Completed</option>
+                              <option value="blocked">Blocked</option>
+                            </select>
+                          )}
                         </div>
                       </div>
                     </div>
