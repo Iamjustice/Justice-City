@@ -9,7 +9,6 @@ import {
   MessageSquare,
   Eye,
   Pencil,
-  Copy,
   Archive,
   Trash2,
   ShieldCheck,
@@ -207,6 +206,12 @@ function formatRelativeSubmitted(dateLabel: string): string {
 
 function isClosedDealStatus(status: string): boolean {
   return status === "Sold" || status === "Rented";
+}
+
+function isUuidListingId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value.trim(),
+  );
 }
 
 function calculateCommissionBreakdownFromPrice(price: string) {
@@ -520,6 +525,30 @@ export default function ModernAgentDashboardView({
       return;
     }
 
+    const editingListingId = String(editingListing.id ?? "").trim();
+    if (!isUuidListingId(editingListingId)) {
+      const localUpdated = {
+        ...editingListing,
+        title,
+        listingType: editingForm.listingType as "Sale" | "Rent",
+        location,
+        description: editingForm.description.trim() || "No description provided yet.",
+        status: requestedStatus,
+        price: normalizePrice(editingForm.price),
+        verificationSteps:
+          requestedStatus === "Published" || isClosedDealStatus(requestedStatus)
+            ? completeAllSteps(ensureVerificationSteps(editingListing))
+            : resetStepsByStatus(requestedStatus, ensureVerificationSteps(editingListing)),
+      };
+      upsertListingInState(localUpdated);
+      toast({
+        title: "Listing updated",
+        description: `${title} has been updated successfully.`,
+      });
+      setEditingListing(null);
+      return;
+    }
+
     const actorId = String(user?.id ?? "").trim();
     if (!actorId) {
       toast({
@@ -597,6 +626,39 @@ export default function ModernAgentDashboardView({
       });
       return;
     }
+    const listingId = String(listing?.id ?? "").trim();
+    if (!isUuidListingId(listingId)) {
+      const merged: any = {
+        ...listing,
+        status,
+        verificationSteps:
+          status === "Published" || isClosedDealStatus(status)
+            ? completeAllSteps(ensureVerificationSteps(listing))
+            : resetStepsByStatus(status, ensureVerificationSteps(listing)),
+      };
+
+      if (isClosedDealStatus(status)) {
+        const breakdown = calculateCommissionBreakdownFromPrice(String(merged.price ?? ""));
+        merged.dealAmount = breakdown.dealAmount;
+        merged.totalCommission = breakdown.totalCommission;
+        merged.agentCommission = breakdown.agentCommission;
+        merged.companyCommission = breakdown.companyCommission;
+        merged.agentPayoutStatus = merged.agentPayoutStatus ?? "Pending";
+      } else {
+        delete merged.dealAmount;
+        delete merged.totalCommission;
+        delete merged.agentCommission;
+        delete merged.companyCommission;
+        delete merged.agentPayoutStatus;
+      }
+
+      upsertListingInState(merged);
+      toast({
+        title: "Listing status updated",
+        description: `${merged.title} is now ${status}.`,
+      });
+      return;
+    }
     const actorId = String(user?.id ?? "").trim();
     if (!actorId) {
       toast({
@@ -668,6 +730,24 @@ export default function ModernAgentDashboardView({
       });
       return;
     }
+    if (!isAdmin) {
+      toast({
+        title: "Admin action only",
+        description: "Only admins can mark agent payouts as paid.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const listingId = String(listing?.id ?? "").trim();
+    if (!isUuidListingId(listingId)) {
+      const merged = { ...listing, agentPayoutStatus: payoutStatus };
+      upsertListingInState(merged);
+      toast({
+        title: "Agent payout updated",
+        description: `${merged.title}: payout marked ${payoutStatus}.`,
+      });
+      return;
+    }
     const actorId = String(user?.id ?? "").trim();
     if (!actorId) {
       toast({
@@ -705,48 +785,23 @@ export default function ModernAgentDashboardView({
     }
   };
 
-  const duplicateListing = (listing: any) => {
-    if (!canModifyListing(listing)) {
-      toast({
-        title: "Permission denied",
-        description: "You can only duplicate listings you own.",
-        variant: "destructive",
-      });
-      return;
-    }
-    const duplicateId = `prop_${Date.now().toString().slice(-6)}`;
-    const duplicateDate = new Date().toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-
-    mutateListings((current) => [
-      {
-        ...listing,
-        id: duplicateId,
-        title: `${listing.title} (Copy)`,
-        status: "Draft",
-        views: 0,
-        inquiries: 0,
-        date: duplicateDate,
-        verificationSteps: resetStepsByStatus("Draft", ensureVerificationSteps(listing)),
-      },
-      ...current,
-    ]);
-
-    toast({
-      title: "Listing duplicated",
-      description: `${listing.title} has been duplicated as a draft.`,
-    });
-  };
-
   const deleteListing = async (listing: any) => {
     if (!canModifyListing(listing)) {
       toast({
         title: "Permission denied",
         description: "You can only delete listings you own.",
         variant: "destructive",
+      });
+      return;
+    }
+    const listingId = String(listing?.id ?? "").trim();
+    if (!isUuidListingId(listingId)) {
+      mutateListings((current) => current.filter((item) => item.id !== listing.id));
+      setSelectedListing((current: any) => (current?.id === listing.id ? null : current));
+      setVerificationListing((current: any) => (current?.id === listing.id ? null : current));
+      toast({
+        title: "Listing removed",
+        description: `${listing.title} has been deleted from your dashboard.`,
       });
       return;
     }
@@ -786,31 +841,6 @@ export default function ModernAgentDashboardView({
     } finally {
       setListingActionInFlightId(null);
     }
-  };
-
-  const updateVerificationStepStatus = (
-    listing: any,
-    stepKey: string,
-    status: VerificationStepStatus,
-  ) => {
-    if (!canEditVerificationProgress) {
-      toast({
-        title: "Admin action only",
-        description: "Only admins can update property verification check progress.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    mutateListings((current) =>
-      current.map((item) => {
-        if (item.id !== listing.id) return item;
-        const steps = ensureVerificationSteps(item).map((step) =>
-          step.key === stepKey ? { ...step, status } : step,
-        );
-        return { ...item, verificationSteps: steps };
-      }),
-    );
   };
 
   const selectedVerificationSteps = verificationListing ? ensureVerificationSteps(verificationListing) : [];
@@ -1093,31 +1123,12 @@ export default function ModernAgentDashboardView({
                 <div className="space-y-3">
                   {selectedVerificationSteps.map((step) => (
                     <div key={step.key} className="rounded-lg border border-slate-200 p-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
-                          <p className="font-semibold text-slate-900">{step.label}</p>
-                          <p className="text-sm text-slate-500">{step.description}</p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
                           <Badge className={statusBadgeClass(step.status)}>{toStatusLabel(step.status)}</Badge>
-                          <select
-                            className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                            value={step.status}
-                            disabled={!canEditVerificationProgress}
-                            onChange={(event) =>
-                              updateVerificationStepStatus(
-                                verificationListing,
-                                step.key,
-                                event.target.value as VerificationStepStatus,
-                              )
-                            }
-                          >
-                            <option value="pending">Pending</option>
-                            <option value="in_progress">In Progress</option>
-                            <option value="completed">Completed</option>
-                            <option value="blocked">Blocked</option>
-                          </select>
+                          <p className="font-semibold text-slate-900">{step.label}</p>
                         </div>
+                        <p className="text-sm text-slate-500">{step.description}</p>
                       </div>
                     </div>
                   ))}
@@ -1301,12 +1312,6 @@ export default function ModernAgentDashboardView({
                                 Edit Listing
                               </DropdownMenuItem>
                             )}
-                            {canManageListing && (
-                              <DropdownMenuItem onClick={() => duplicateListing(listing)}>
-                                <Copy className="mr-2 h-4 w-4" />
-                                Duplicate Listing
-                              </DropdownMenuItem>
-                            )}
                             <DropdownMenuItem onClick={() => setVerificationListing(listing)}>
                               <ShieldCheck className="mr-2 h-4 w-4" />
                               View Verification Progress
@@ -1329,7 +1334,9 @@ export default function ModernAgentDashboardView({
                                 Move to Draft
                               </DropdownMenuItem>
                             ))}
-                            {canManageListing && !isAdmin && listing.status !== "Pending Review" && (
+                            {canManageListing &&
+                              !isAdmin &&
+                              (listing.status === "Draft" || listing.status === "Archived") && (
                               <DropdownMenuItem
                                 disabled={isUpdatingListing}
                                 onClick={() => void setListingStatus(listing, "Pending Review")}
@@ -1361,7 +1368,7 @@ export default function ModernAgentDashboardView({
                                 Reopen Listing
                               </DropdownMenuItem>
                             )}
-                            {canManageListing && isClosedDealStatus(String(listing.status ?? "")) &&
+                            {canManageListing && isAdmin && isClosedDealStatus(String(listing.status ?? "")) &&
                               listing.agentPayoutStatus !== "Paid" && (
                                 <DropdownMenuItem
                                   disabled={isUpdatingListing}
@@ -1371,7 +1378,15 @@ export default function ModernAgentDashboardView({
                                   Mark Agent Payout Paid
                                 </DropdownMenuItem>
                               )}
-                            {canManageListing && (
+                            {canManageListing && listing.status === "Archived" ? (
+                              <DropdownMenuItem
+                                disabled={isUpdatingListing}
+                                onClick={() => void setListingStatus(listing, "Draft")}
+                              >
+                                <Clock className="mr-2 h-4 w-4" />
+                                Unarchive Listing
+                              </DropdownMenuItem>
+                            ) : canManageListing ? (
                               <DropdownMenuItem
                                 disabled={isUpdatingListing}
                                 onClick={() => void setListingStatus(listing, "Archived")}
@@ -1379,7 +1394,7 @@ export default function ModernAgentDashboardView({
                                 <Archive className="mr-2 h-4 w-4" />
                                 Archive Listing
                               </DropdownMenuItem>
-                            )}
+                            ) : null}
                             {canManageListing && <DropdownMenuSeparator />}
                             {canManageListing && (
                               <DropdownMenuItem

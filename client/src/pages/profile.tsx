@@ -18,6 +18,7 @@ export default function ProfilePage() {
 
   const emailVerified = Boolean(user.emailVerified);
   const phoneVerified = Boolean(user.phoneVerified);
+  const nicknameLabel = String(user.nickname ?? "").trim() || "Not provided";
   const genderLabel =
     user.gender === "male" ? "Male" : user.gender === "female" ? "Female" : "Not specified";
   const formatDateOfBirth = (value: string | undefined): string => {
@@ -157,7 +158,7 @@ export default function ProfilePage() {
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-slate-500 font-medium">Nickname</p>
-                  <p className="text-slate-900 font-semibold">J-City Pioneer</p>
+                  <p className="text-slate-900 font-semibold">{nicknameLabel}</p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-slate-500 font-medium">Gender</p>

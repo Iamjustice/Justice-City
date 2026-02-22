@@ -391,6 +391,7 @@ async function buildAuthProfileFromToken(
 ): Promise<{
   id: string;
   name: string;
+  nickname?: string;
   email: string;
   role: AppUserRole;
   isVerified: boolean;
@@ -415,6 +416,7 @@ async function buildAuthProfileFromToken(
 
   type AuthUserRow = {
     id: string;
+    username?: string | null;
     full_name?: string | null;
     email?: string | null;
     role?: string | null;
@@ -434,7 +436,7 @@ async function buildAuthProfileFromToken(
   const { data: fullUserRow, error: fullUserError } = await client
     .from(USERS_TABLE)
     .select(
-      "id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender, date_of_birth, home_address, office_address",
+      "id, username, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender, date_of_birth, home_address, office_address",
     )
     .eq("id", authUser.id)
     .maybeSingle<AuthUserRow>();
@@ -445,7 +447,7 @@ async function buildAuthProfileFromToken(
     const { data: fallbackUserRow, error: fallbackUserError } = await client
       .from(USERS_TABLE)
       .select(
-        "id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender",
+        "id, username, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender",
       )
       .eq("id", authUser.id)
       .maybeSingle<AuthUserRow>();
@@ -515,6 +517,8 @@ async function buildAuthProfileFromToken(
     String(userRow?.full_name ?? metadata.full_name ?? metadata.name ?? "").trim() ||
     email.split("@")[0] ||
     "User";
+  const nickname =
+    String(userRow?.username ?? metadata.nickname ?? metadata.username ?? "").trim() || undefined;
   const avatar =
     String(userRow?.avatar_url ?? metadata.avatar_url ?? metadata.picture ?? "").trim() || undefined;
   const metadataGender = String(metadata.gender ?? "").trim().toLowerCase();
@@ -523,14 +527,95 @@ async function buildAuthProfileFromToken(
     resolvedGenderRaw === "male" || resolvedGenderRaw === "female"
       ? (resolvedGenderRaw as "male" | "female")
       : undefined;
-  const dateOfBirth = String(userRow?.date_of_birth ?? "").trim() || undefined;
-  const homeAddress = String(userRow?.home_address ?? "").trim() || undefined;
-  const officeAddress = String(userRow?.office_address ?? "").trim() || undefined;
+  const loadUserColumnValue = async (
+    column: "date_of_birth" | "home_address" | "office_address",
+  ): Promise<string | undefined> => {
+    const { data, error } = await client
+      .from(USERS_TABLE)
+      .select(column)
+      .eq("id", authUser.id)
+      .maybeSingle<Record<string, string | null>>();
+
+    if (error) {
+      if (isMissingTableOrColumnError(error)) return undefined;
+      throw error;
+    }
+
+    return String(data?.[column] ?? "").trim() || undefined;
+  };
+  const loadLatestVerificationColumnValue = async (
+    column: "date_of_birth" | "home_address" | "office_address",
+  ): Promise<string | undefined> => {
+    const { data, error } = await client
+      .from(VERIFICATIONS_TABLE)
+      .select(column)
+      .eq("user_id", authUser.id)
+      .order("updated_at", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<Record<string, string | null>>();
+
+    if (error) {
+      if (isMissingTableOrColumnError(error)) return undefined;
+      throw error;
+    }
+
+    return String(data?.[column] ?? "").trim() || undefined;
+  };
+
+  let dateOfBirth = String(userRow?.date_of_birth ?? "").trim() || undefined;
+  let homeAddress = String(userRow?.home_address ?? "").trim() || undefined;
+  let officeAddress = String(userRow?.office_address ?? "").trim() || undefined;
+
+  if (!dateOfBirth) {
+    dateOfBirth = await loadUserColumnValue("date_of_birth");
+  }
+  if (!homeAddress) {
+    homeAddress = await loadUserColumnValue("home_address");
+  }
+  if (!officeAddress) {
+    officeAddress = await loadUserColumnValue("office_address");
+  }
+
+  const profileBackfillUpdates: Record<string, string> = {};
+  if (!dateOfBirth) {
+    const fallback = await loadLatestVerificationColumnValue("date_of_birth");
+    if (fallback) {
+      dateOfBirth = fallback;
+      profileBackfillUpdates.date_of_birth = fallback;
+    }
+  }
+  if (!homeAddress) {
+    const fallback = await loadLatestVerificationColumnValue("home_address");
+    if (fallback) {
+      homeAddress = fallback;
+      profileBackfillUpdates.home_address = fallback;
+    }
+  }
+  if (!officeAddress) {
+    const fallback = await loadLatestVerificationColumnValue("office_address");
+    if (fallback) {
+      officeAddress = fallback;
+      profileBackfillUpdates.office_address = fallback;
+    }
+  }
+
+  if (Object.keys(profileBackfillUpdates).length > 0) {
+    const { error: profileBackfillError } = await client
+      .from(USERS_TABLE)
+      .update(profileBackfillUpdates)
+      .eq("id", authUser.id);
+    if (profileBackfillError && !isMissingTableOrColumnError(profileBackfillError)) {
+      throw profileBackfillError;
+    }
+  }
+
   const phone = String(userRow?.phone ?? "").trim() || undefined;
 
   return {
     id: String(authUser.id),
     name,
+    nickname,
     email,
     role,
     isVerified: derivedVerified,

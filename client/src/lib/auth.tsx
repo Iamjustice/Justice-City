@@ -9,6 +9,7 @@ type UserRole = "buyer" | "seller" | "agent" | "owner" | "renter" | "admin" | nu
 interface User {
   id: string;
   name: string;
+  nickname?: string;
   email: string;
   role: UserRole;
   isVerified: boolean;
@@ -171,6 +172,7 @@ async function withTimeout<T>(
 function toAppUser(payload: {
   id: string;
   name?: string;
+  nickname?: string;
   email?: string;
   role?: string;
   isVerified?: boolean;
@@ -192,6 +194,7 @@ function toAppUser(payload: {
   return {
     id: String(payload.id ?? ""),
     name: resolvedName,
+    nickname: String(payload.nickname ?? "").trim() || undefined,
     email,
     role: normalizeRole(payload.role ?? "buyer", { allowAdmin: true }),
     isVerified: Boolean(payload.isVerified),
@@ -231,6 +234,8 @@ function toFallbackUserFromAuthUser(
     "User";
   const avatar =
     String(metadata.avatar_url ?? metadata.picture ?? "").trim() || undefined;
+  const nickname =
+    String(metadata.nickname ?? metadata.username ?? "").trim() || undefined;
   const role = normalizeRole(metadata.role ?? options?.fallbackRole ?? "buyer", {
     allowAdmin: true,
   });
@@ -241,6 +246,7 @@ function toFallbackUserFromAuthUser(
   return toAppUser({
     id: userId,
     name,
+    nickname,
     email,
     role,
     avatar,
@@ -271,6 +277,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const payload = (await response.json()) as {
         id: string;
         name?: string;
+        nickname?: string;
         email?: string;
         role?: string;
         isVerified?: boolean;
