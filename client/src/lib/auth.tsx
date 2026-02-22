@@ -295,16 +295,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const { data, error } = await supabase.auth.getSession();
-    if (error || !data.session?.access_token) {
-      setUser(null);
-      setIsLoading(false);
-      return;
-    }
-
     try {
-      const profile = await fetchAuthProfile(data.session.access_token);
-      setUser(profile);
+      const { data, error } = await withTimeout(
+        supabase.auth.getSession(),
+        AUTH_REQUEST_TIMEOUT_MS,
+        "Session check timed out. Please refresh and try again.",
+      );
+
+      if (error || !data.session?.access_token) {
+        setUser(null);
+        return;
+      }
+
+      try {
+        const profile = await withTimeout(
+          fetchAuthProfile(data.session.access_token),
+          PROFILE_SYNC_TIMEOUT_MS,
+          "Profile sync timed out.",
+        );
+        setUser(profile);
+      } catch {
+        const fallbackUser = toFallbackUserFromAuthUser(data.session.user, {
+          fallbackName: data.session.user.email ?? "",
+          fallbackRole: "buyer",
+        });
+        setUser(fallbackUser);
+      }
     } catch {
       setUser(null);
     } finally {
@@ -339,12 +355,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const profile = await fetchAuthProfile(session.access_token);
+        const profile = await withTimeout(
+          fetchAuthProfile(session.access_token),
+          PROFILE_SYNC_TIMEOUT_MS,
+          "Profile sync timed out.",
+        );
         if (!active) return;
         setUser(profile);
       } catch {
         if (!active) return;
-        setUser(null);
+        const fallbackUser = toFallbackUserFromAuthUser(session.user, {
+          fallbackName: session.user.email ?? "",
+          fallbackRole: "buyer",
+        });
+        setUser(fallbackUser);
       } finally {
         if (active) setIsLoading(false);
       }

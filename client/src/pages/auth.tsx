@@ -43,8 +43,9 @@ function normalizeAuthUiError(error: unknown): string {
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
   const [isSignUp, setIsSignUp] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [authErrorMessage, setAuthErrorMessage] = useState("");
-  const { signIn, signUp, isLoading } = useAuth();
+  const { signIn, signUp } = useAuth();
   const { toast } = useToast();
 
   useEffect(() => {
@@ -66,6 +67,7 @@ export default function AuthPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthErrorMessage("");
+    setIsSubmitting(true);
     try {
       if (isSignUp) {
         const signedIn = await signUp({
@@ -100,6 +102,8 @@ export default function AuthPage() {
         description: message,
         variant: "destructive",
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -219,10 +223,10 @@ export default function AuthPage() {
           <CardFooter className="flex flex-col gap-4">
             <Button
               type="submit"
-              disabled={isLoading}
+              disabled={isSubmitting}
               className="w-full bg-blue-600 hover:bg-blue-700 h-11 text-base font-semibold"
             >
-              {isLoading ? "Please wait..." : isSignUp ? "Sign Up" : "Log In"}
+              {isSubmitting ? "Please wait..." : isSignUp ? "Sign Up" : "Log In"}
             </Button>
             <div className="text-sm text-center text-slate-500">
               {isSignUp ? "Already have an account?" : "Don't have an account?"}{" "}

@@ -1,6 +1,20 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { getSupabaseClient } from "@/lib/supabase";
 
+function hasAuthorizationHeader(headers?: HeadersInit): boolean {
+  if (!headers) return false;
+
+  if (headers instanceof Headers) {
+    return headers.has("Authorization");
+  }
+
+  if (Array.isArray(headers)) {
+    return headers.some(([key]) => String(key).toLowerCase() === "authorization");
+  }
+
+  return Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -14,11 +28,11 @@ export async function apiRequest(
   data?: unknown | undefined,
   options?: { headers?: HeadersInit },
 ): Promise<Response> {
-  const supabase = getSupabaseClient();
-  const accessToken =
-    supabase
-      ? String((await supabase.auth.getSession()).data.session?.access_token ?? "").trim()
-      : "";
+  const shouldReuseProvidedAuth = hasAuthorizationHeader(options?.headers);
+  const supabase = shouldReuseProvidedAuth ? null : getSupabaseClient();
+  const accessToken = supabase
+    ? String((await supabase.auth.getSession()).data.session?.access_token ?? "").trim()
+    : "";
 
   const headers: HeadersInit = {
     ...(data ? { "Content-Type": "application/json" } : {}),
