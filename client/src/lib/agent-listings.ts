@@ -98,15 +98,7 @@ export async function fetchAgentListings(actor: ListingActor): Promise<AgentList
   if (actor.actorRole) params.set("actorRole", actor.actorRole);
   if (actor.actorName) params.set("actorName", actor.actorName);
 
-  const response = await fetch(`/api/agent/listings?${params.toString()}`, {
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
-
+  const response = await apiRequest("GET", `/api/agent/listings?${params.toString()}`);
   return response.json();
 }
 

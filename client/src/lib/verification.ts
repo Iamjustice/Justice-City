@@ -69,6 +69,7 @@ export interface VerificationDocumentUploadPayload {
   verificationId?: string;
   homeAddress?: string;
   officeAddress?: string;
+  dateOfBirth?: string;
 }
 
 export interface VerificationDocumentUploadResponse {
@@ -77,6 +78,15 @@ export interface VerificationDocumentUploadResponse {
   bucketId: string;
   storagePath: string;
   previewUrl?: string;
+  addressMatch?: {
+    status: "matched" | "mismatch" | "unreadable" | "skipped";
+    score: number;
+    threshold: number;
+    extractedAddress?: string;
+    declaredAddress?: string;
+    method?: "openai_vision" | "pdf_text" | "raw_text";
+    reason?: string;
+  };
 }
 
 export class VerificationApiError extends Error {
@@ -129,11 +139,22 @@ export async function fetchVerificationStatus(
 }
 
 async function requestVerificationJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
+  const supabase = getSupabaseClient();
+  const accessToken =
+    supabase
+      ? String((await supabase.auth.getSession()).data.session?.access_token ?? "").trim()
+      : "";
+
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(body),
     credentials: "include",
   });

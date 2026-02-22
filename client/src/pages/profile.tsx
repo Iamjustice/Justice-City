@@ -18,6 +18,19 @@ export default function ProfilePage() {
 
   const emailVerified = Boolean(user.emailVerified);
   const phoneVerified = Boolean(user.phoneVerified);
+  const genderLabel =
+    user.gender === "male" ? "Male" : user.gender === "female" ? "Female" : "Not specified";
+  const formatDateOfBirth = (value: string | undefined): string => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "Not provided";
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return raw;
+    return parsed.toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
 
   const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -112,7 +125,7 @@ export default function ProfilePage() {
               <div className="flex items-center justify-between gap-3 text-slate-600">
                 <div className="min-w-0 flex items-center gap-3">
                   <Phone className="w-4 h-4 shrink-0" />
-                  <span className="text-sm truncate">+234 (0) 906 534 0189</span>
+                  <span className="text-sm truncate">{user.phone || "Phone not provided"}</span>
                 </div>
                 {phoneVerified ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700">
@@ -125,7 +138,7 @@ export default function ProfilePage() {
               </div>
               <div className="flex items-center gap-3 text-slate-600">
                 <MapPin className="w-4 h-4" />
-                <span className="text-sm">Owerri, Nigeria</span>
+                <span className="text-sm">{user.homeAddress || "Address not provided"}</span>
               </div>
             </div>
           </CardContent>
@@ -148,11 +161,19 @@ export default function ProfilePage() {
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-slate-500 font-medium">Gender</p>
-                  <p className="text-slate-900 font-semibold">Not Specified</p>
+                  <p className="text-slate-900 font-semibold">{genderLabel}</p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm text-slate-500 font-medium">Date of Birth</p>
-                  <p className="text-slate-900 font-semibold">January 15, 1995</p>
+                  <p className="text-slate-900 font-semibold">{formatDateOfBirth(user.dateOfBirth)}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm text-slate-500 font-medium">Home Address</p>
+                  <p className="text-slate-900 font-semibold">{user.homeAddress || "Not provided"}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm text-slate-500 font-medium">Office Address</p>
+                  <p className="text-slate-900 font-semibold">{user.officeAddress || "Not provided"}</p>
                 </div>
               </div>
             </CardContent>

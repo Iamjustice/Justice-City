@@ -78,6 +78,10 @@ alter table public.users
   add column if not exists is_verified boolean default false,
   add column if not exists avatar_url text,
   add column if not exists phone text,
+  add column if not exists gender text,
+  add column if not exists date_of_birth text,
+  add column if not exists home_address text,
+  add column if not exists office_address text,
   add column if not exists created_at timestamptz default now(),
   add column if not exists updated_at timestamptz default now();
 
@@ -118,6 +122,7 @@ create table if not exists public.verifications (
   message text,
   home_address text,
   office_address text,
+  date_of_birth text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -139,6 +144,16 @@ create table if not exists public.verification_documents (
   verification_id uuid not null references public.verifications(id) on delete cascade,
   document_type text not null,
   document_url text not null,
+  bucket_id text default 'verification-documents',
+  storage_path text,
+  uploaded_by uuid references public.users(id) on delete set null,
+  mime_type text,
+  file_size_bytes bigint,
+  extracted_address text,
+  input_home_address text,
+  address_match_status text,
+  address_match_score numeric,
+  address_match_method text,
   created_at timestamptz not null default now()
 );
 

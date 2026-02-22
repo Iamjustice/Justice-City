@@ -25,7 +25,12 @@ alter table public.verification_documents
   add column if not exists storage_path text,
   add column if not exists uploaded_by uuid references public.users(id) on delete set null,
   add column if not exists mime_type text,
-  add column if not exists file_size_bytes bigint;
+  add column if not exists file_size_bytes bigint,
+  add column if not exists extracted_address text,
+  add column if not exists input_home_address text,
+  add column if not exists address_match_status text,
+  add column if not exists address_match_score numeric,
+  add column if not exists address_match_method text;
 
 -- Keep legacy rows usable in UI by backfilling missing storage path from document_url when possible.
 update public.verification_documents
@@ -37,6 +42,9 @@ where storage_path is null
 
 create index if not exists idx_verification_documents_storage_path
 on public.verification_documents (bucket_id, storage_path);
+
+create index if not exists idx_verification_documents_address_match_status
+on public.verification_documents (address_match_status);
 
 drop policy if exists verification_documents_authenticated_read on storage.objects;
 create policy verification_documents_authenticated_read
@@ -77,4 +85,3 @@ using (
   bucket_id = 'verification-documents'
   and owner::text = auth.uid()::text
 );
-

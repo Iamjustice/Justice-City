@@ -1,9 +1,15 @@
 import { randomUUID } from "crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  evaluateUtilityBillAddress,
+  isUtilityBillAddressMatchEnforced,
+  type UtilityBillAddressEvaluationResult,
+} from "./utility-bill-address";
 
 const VERIFICATIONS_TABLE = process.env.SUPABASE_VERIFICATIONS_TABLE || "verifications";
 const VERIFICATION_DOCUMENTS_TABLE =
   process.env.SUPABASE_VERIFICATION_DOCUMENTS_TABLE || "verification_documents";
+const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
 const VERIFICATION_DOCUMENTS_BUCKET =
   process.env.SUPABASE_VERIFICATION_DOCUMENTS_BUCKET || "verification-documents";
 const VERIFICATION_DOCUMENT_SIGNED_URL_TTL_SEC = Number.parseInt(
@@ -32,6 +38,7 @@ type UploadVerificationDocumentInput = {
   verificationId?: string;
   homeAddress?: string;
   officeAddress?: string;
+  dateOfBirth?: string;
 };
 
 type UploadVerificationDocumentResult = {
@@ -40,12 +47,23 @@ type UploadVerificationDocumentResult = {
   bucketId: string;
   storagePath: string;
   previewUrl?: string;
+  addressMatch?: UtilityBillAddressEvaluationResult;
 };
 
 type Base64Payload = {
   buffer: Buffer;
   mimeType?: string;
 };
+
+export class VerificationDocumentValidationError extends Error {
+  readonly details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "VerificationDocumentValidationError";
+    this.details = details;
+  }
+}
 
 function getClient(): SupabaseClient | null {
   const url = String(process.env.SUPABASE_URL ?? "").trim();
@@ -94,6 +112,12 @@ function normalizeAddress(rawValue: unknown): string | undefined {
     .replace(/\s+/g, " ");
   if (!normalized) return undefined;
   return normalized.slice(0, 500);
+}
+
+function normalizeDateOfBirth(rawValue: unknown): string | undefined {
+  const normalized = String(rawValue ?? "").trim();
+  if (!normalized) return undefined;
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
 }
 
 function parseBase64Payload(input: string): Base64Payload {
@@ -192,28 +216,46 @@ async function persistVerificationAddressDetails(
     userId: string;
     homeAddress?: string;
     officeAddress?: string;
+    dateOfBirth?: string;
   },
 ): Promise<void> {
-  const updates: Record<string, string | null> = {};
+  const verificationUpdates: Record<string, string | null> = {};
+  const userUpdates: Record<string, string | null> = {};
   if (typeof input.homeAddress === "string" && input.homeAddress.trim().length > 0) {
-    updates.home_address = input.homeAddress.trim();
+    const normalized = input.homeAddress.trim();
+    verificationUpdates.home_address = normalized;
+    userUpdates.home_address = normalized;
   }
   if (typeof input.officeAddress === "string" && input.officeAddress.trim().length > 0) {
-    updates.office_address = input.officeAddress.trim();
+    const normalized = input.officeAddress.trim();
+    verificationUpdates.office_address = normalized;
+    userUpdates.office_address = normalized;
+  }
+  if (typeof input.dateOfBirth === "string" && input.dateOfBirth.trim().length > 0) {
+    const normalized = input.dateOfBirth.trim();
+    verificationUpdates.date_of_birth = normalized;
+    userUpdates.date_of_birth = normalized;
   }
 
-  if (Object.keys(updates).length === 0) return;
+  if (Object.keys(verificationUpdates).length > 0) {
+    const { error } = await client
+      .from(VERIFICATIONS_TABLE)
+      .update(verificationUpdates)
+      .eq("id", input.verificationId)
+      .eq("user_id", input.userId);
 
-  const { error } = await client
-    .from(VERIFICATIONS_TABLE)
-    .update(updates)
-    .eq("id", input.verificationId)
-    .eq("user_id", input.userId);
+    if (error && !isMissingTableOrColumnError(error)) {
+      throw new Error(`Failed to save verification address details: ${error.message}`);
+    }
+  }
 
-  if (!error) return;
-  if (isMissingTableOrColumnError(error)) return;
+  if (Object.keys(userUpdates).length > 0) {
+    const { error } = await client.from(USERS_TABLE).update(userUpdates).eq("id", input.userId);
 
-  throw new Error(`Failed to save verification address details: ${error.message}`);
+    if (error && !isMissingTableOrColumnError(error)) {
+      throw new Error(`Failed to sync user profile verification details: ${error.message}`);
+    }
+  }
 }
 
 function resolveMimeType(
@@ -247,6 +289,7 @@ export async function uploadVerificationDocument(
       : undefined;
   const homeAddress = normalizeAddress(input.homeAddress);
   const officeAddress = normalizeAddress(input.officeAddress);
+  const dateOfBirth = normalizeDateOfBirth(input.dateOfBirth);
 
   if (!userId) {
     throw new Error("userId is required.");
@@ -276,7 +319,39 @@ export async function uploadVerificationDocument(
 
   const mimeType = resolveMimeType(input.mimeType, payload.mimeType, fileName);
   if (!ALLOWED_VERIFICATION_DOCUMENT_MIME_TYPES.has(mimeType)) {
-    throw new Error("Unsupported file type. Allowed types: PDF, JPG, PNG, WEBP.");
+    throw new VerificationDocumentValidationError("Unsupported file type. Allowed types: PDF, JPG, PNG, WEBP.");
+  }
+
+  let addressMatch: UtilityBillAddressEvaluationResult | undefined;
+  if (documentType === "utility_bill") {
+    if (!homeAddress) {
+      throw new VerificationDocumentValidationError(
+        "Home address is required before uploading utility bill.",
+      );
+    }
+
+    addressMatch = await evaluateUtilityBillAddress({
+      buffer,
+      mimeType,
+      fileName,
+      declaredHomeAddress: homeAddress,
+    });
+
+    if (isUtilityBillAddressMatchEnforced()) {
+      if (addressMatch.status === "unreadable") {
+        throw new VerificationDocumentValidationError(
+          "Could not read an address from the utility bill. Upload a clearer utility bill where the address is visible.",
+          { addressMatch },
+        );
+      }
+
+      if (addressMatch.status === "mismatch") {
+        throw new VerificationDocumentValidationError(
+          "Utility bill address does not match the home address you entered. Use a utility bill that matches your current home address.",
+          { addressMatch },
+        );
+      }
+    }
   }
 
   const verificationId = await ensureVerificationRecord(client, userId, input.verificationId);
@@ -285,6 +360,7 @@ export async function uploadVerificationDocument(
     userId,
     homeAddress,
     officeAddress,
+    dateOfBirth,
   });
   const storagePath = `${userId}/${verificationId}/${Date.now()}_${sanitizeStorageFileName(fileName)}`;
 
@@ -318,6 +394,16 @@ export async function uploadVerificationDocument(
     uploaded_by: isUuid(userId) ? userId : null,
     mime_type: mimeType,
     file_size_bytes: resolvedSize,
+    extracted_address:
+      addressMatch && addressMatch.extractedAddress ? addressMatch.extractedAddress : null,
+    input_home_address:
+      addressMatch && addressMatch.declaredAddress ? addressMatch.declaredAddress : null,
+    address_match_status: addressMatch?.status ?? null,
+    address_match_score:
+      typeof addressMatch?.score === "number" && Number.isFinite(addressMatch.score)
+        ? addressMatch.score
+        : null,
+    address_match_method: addressMatch?.method ?? null,
   };
 
   const { data: insertedFull, error: insertFullError } = await client
@@ -358,5 +444,6 @@ export async function uploadVerificationDocument(
     bucketId: VERIFICATION_DOCUMENTS_BUCKET,
     storagePath,
     previewUrl,
+    addressMatch,
   };
 }

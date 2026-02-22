@@ -36,6 +36,7 @@ export default function VerificationPage() {
   const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
   const [utilityBillDocument, setUtilityBillDocument] = useState<File | null>(null);
+  const [dateOfBirth, setDateOfBirth] = useState("");
   const [homeAddress, setHomeAddress] = useState("");
   const [officeAddress, setOfficeAddress] = useState("");
   const [isSavingDocument, setIsSavingDocument] = useState(false);
@@ -485,6 +486,15 @@ export default function VerificationPage() {
   };
 
   const handleContinueToBiometric = async () => {
+    if (!dateOfBirth.trim()) {
+      toast({
+        title: "Date of birth required",
+        description: "Enter your date of birth before continuing.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!homeAddress.trim()) {
       toast({
         title: "Home address required",
@@ -523,6 +533,7 @@ export default function VerificationPage() {
     try {
       const normalizedHomeAddress = homeAddress.trim();
       const normalizedOfficeAddress = officeAddress.trim();
+      const normalizedDateOfBirth = dateOfBirth.trim();
       const identityContentBase64 = await readFileAsDataUrl(selectedDocument);
       const utilityBillContentBase64 = await readFileAsDataUrl(utilityBillDocument);
 
@@ -536,6 +547,7 @@ export default function VerificationPage() {
         verificationId: verificationId || undefined,
         homeAddress: normalizedHomeAddress,
         officeAddress: normalizedOfficeAddress || undefined,
+        dateOfBirth: normalizedDateOfBirth,
       });
 
       const uploadedUtilityBill = await uploadVerificationDocument({
@@ -548,9 +560,11 @@ export default function VerificationPage() {
         verificationId: uploadedIdentity.verificationId || verificationId || undefined,
         homeAddress: normalizedHomeAddress,
         officeAddress: normalizedOfficeAddress || undefined,
+        dateOfBirth: normalizedDateOfBirth,
       });
 
       setVerificationId(uploadedUtilityBill.verificationId || uploadedIdentity.verificationId);
+      await refreshUserProfile();
       setStep(3);
       toast({
         title: "Documents captured",
@@ -577,6 +591,7 @@ export default function VerificationPage() {
     try {
       const isApproved = await verifyIdentity({
         verificationId: verificationId || undefined,
+        dateOfBirth: dateOfBirth.trim() || undefined,
       });
       if (isApproved) {
         hasRedirectedRef.current = true;
@@ -783,6 +798,15 @@ export default function VerificationPage() {
               </div>
               <div className="grid gap-4 text-left">
                 <div className="space-y-2">
+                  <Label htmlFor="date-of-birth">Date of Birth</Label>
+                  <Input
+                    id="date-of-birth"
+                    type="date"
+                    value={dateOfBirth}
+                    onChange={(event) => setDateOfBirth(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="home-address">Home Address</Label>
                   <Input
                     id="home-address"
@@ -858,7 +882,13 @@ export default function VerificationPage() {
               <Button
                 onClick={handleContinueToBiometric}
                 className="w-full bg-blue-600"
-                disabled={!homeAddress.trim() || !selectedDocument || !utilityBillDocument || isSavingDocument}
+                disabled={
+                  !dateOfBirth.trim() ||
+                  !homeAddress.trim() ||
+                  !selectedDocument ||
+                  !utilityBillDocument ||
+                  isSavingDocument
+                }
               >
                 {isSavingDocument ? "Saving..." : "Continue"}
               </Button>

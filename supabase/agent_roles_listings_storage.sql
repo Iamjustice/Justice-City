@@ -14,7 +14,11 @@ alter table public.users
   add column if not exists status text default 'active',
   add column if not exists is_verified boolean default false,
   add column if not exists avatar_url text,
-  add column if not exists phone text;
+  add column if not exists phone text,
+  add column if not exists gender text,
+  add column if not exists date_of_birth text,
+  add column if not exists home_address text,
+  add column if not exists office_address text;
 
 do $$
 begin

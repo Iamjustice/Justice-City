@@ -806,7 +806,10 @@ export async function updateAgentListingPayoutStatus(
   if (!client) {
     const existing = getFallbackListingById(listingId);
     if (!existing) throw new Error("Listing was not found.");
-    await ensureActorAuthorized(actor, existing.agentId || actorId);
+    const { isAdmin } = await ensureActorAuthorized(actor, existing.agentId || actorId);
+    if (!isAdmin) {
+      throwForbidden("Only admins can update payout status.");
+    }
     const updated: AgentListingRecord = { ...existing, agentPayoutStatus: nextStatus };
     setFallbackListing({ ...updated, agentId: existing.agentId });
     return updated;
@@ -820,7 +823,10 @@ export async function updateAgentListingPayoutStatus(
     const listing = await getDbListingById(client, listingId);
     if (!listing) throw new Error("Listing was not found.");
 
-    await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    const { isAdmin } = await ensureActorAuthorized(actor, String(listing.agent_id ?? ""), client);
+    if (!isAdmin) {
+      throwForbidden("Only admins can update payout status.");
+    }
 
     await maybeRecalculateCommission(client, listingId);
 
@@ -856,6 +862,10 @@ export async function updateAgentListingPayoutStatus(
     ) {
       const fallback = getFallbackListingById(listingId);
       if (!fallback) throw new Error("Listing was not found.");
+      const { isAdmin } = await ensureActorAuthorized(actor, fallback.agentId || actorId);
+      if (!isAdmin) {
+        throwForbidden("Only admins can update payout status.");
+      }
       const updated: AgentListingRecord = { ...fallback, agentPayoutStatus: nextStatus };
       setFallbackListing({ ...updated, agentId: fallback.agentId });
       return updated;

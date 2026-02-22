@@ -22,6 +22,19 @@ create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
   password text not null,
+  full_name text,
+  email text,
+  role text default 'buyer',
+  status text default 'active',
+  is_verified boolean not null default false,
+  email_verified boolean not null default false,
+  phone_verified boolean not null default false,
+  avatar_url text,
+  phone text,
+  gender text,
+  date_of_birth text,
+  home_address text,
+  office_address text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -46,6 +59,7 @@ create table if not exists public.verifications (
   message text,
   home_address text,
   office_address text,
+  date_of_birth text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -68,6 +82,16 @@ create table if not exists public.verification_documents (
   verification_id uuid not null references public.verifications(id) on delete cascade,
   document_type text not null,
   document_url text not null,
+  bucket_id text default 'verification-documents',
+  storage_path text,
+  uploaded_by uuid references public.users(id) on delete set null,
+  mime_type text,
+  file_size_bytes bigint,
+  extracted_address text,
+  input_home_address text,
+  address_match_status text,
+  address_match_score numeric,
+  address_match_method text,
   created_at timestamptz not null default now()
 );
 

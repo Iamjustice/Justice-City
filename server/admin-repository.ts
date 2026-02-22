@@ -708,7 +708,25 @@ export async function setVerificationStatus(
     if (userId) {
       await setUserVerificationState(userId, true);
     }
+    return;
   }
+
+  const userId = String(data?.user_id ?? "").trim();
+  if (!userId) return;
+
+  const { data: approvedRow, error: approvedLookupError } = await client
+    .from(VERIFICATIONS_TABLE)
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "approved")
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+
+  if (approvedLookupError && !isTableMissingError(approvedLookupError)) {
+    throw new Error(`Failed to recalculate user verification state: ${approvedLookupError.message}`);
+  }
+
+  await setUserVerificationState(userId, Boolean(approvedRow?.id));
 }
 
 export async function setFlaggedListingStatus(

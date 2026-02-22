@@ -51,7 +51,10 @@ import {
   markPhoneVerifyFailed,
   markPhoneVerifySucceeded,
 } from "./phone-otp-guard";
-import { uploadVerificationDocument } from "./verification-documents-repository";
+import {
+  uploadVerificationDocument,
+  VerificationDocumentValidationError,
+} from "./verification-documents-repository";
 import {
   claimPayoutLedgerEntry,
   createChatAction,
@@ -92,6 +95,8 @@ const CONVERSATION_TRANSCRIPTS_TABLE =
   process.env.SUPABASE_CONVERSATION_TRANSCRIPTS_TABLE || "conversation_transcripts";
 const USERS_TABLE = process.env.SUPABASE_USERS_TABLE || "users";
 const VERIFICATIONS_TABLE = process.env.SUPABASE_VERIFICATIONS_TABLE || "verifications";
+const VERIFICATION_DOCUMENTS_TABLE =
+  process.env.SUPABASE_VERIFICATION_DOCUMENTS_TABLE || "verification_documents";
 const LISTINGS_TABLE = process.env.SUPABASE_LISTINGS_TABLE || "listings";
 const LISTING_IMAGES_TABLE = process.env.SUPABASE_LISTING_IMAGES_TABLE || "listing_images";
 const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || "listing_documents";
@@ -357,6 +362,8 @@ async function ensurePublicUserRow(
   const fullName =
     String(metadata.full_name ?? metadata.name ?? "").trim() || String(authUser.email ?? "");
   const role = normalizeUserRole(metadata.role);
+  const genderRaw = String(metadata.gender ?? "").trim().toLowerCase();
+  const gender = genderRaw === "male" || genderRaw === "female" ? genderRaw : null;
   const avatarUrl = String(metadata.avatar_url ?? metadata.picture ?? "").trim() || null;
 
   const insertPayload: Record<string, unknown> = {
@@ -368,6 +375,7 @@ async function ensurePublicUserRow(
     role,
     status: "active",
     is_verified: false,
+    gender,
     avatar_url: avatarUrl,
   };
 
@@ -388,6 +396,11 @@ async function buildAuthProfileFromToken(
   isVerified: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
+  phone?: string;
+  gender?: "male" | "female";
+  dateOfBirth?: string;
+  homeAddress?: string;
+  officeAddress?: string;
   avatar?: string;
   } | null> {
   const { data: authData, error: authError } = await client.auth.getUser(token);
@@ -400,23 +413,49 @@ async function buildAuthProfileFromToken(
     user_metadata: (authUser.user_metadata ?? null) as Record<string, unknown> | null,
   });
 
-  const { data: userRow, error: userError } = await client
-    .from(USERS_TABLE)
-    .select("id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url")
-    .eq("id", authUser.id)
-    .maybeSingle<{
-      id: string;
-      full_name?: string | null;
-      email?: string | null;
-      role?: string | null;
-      is_verified?: boolean | null;
-      email_verified?: boolean | null;
-      phone_verified?: boolean | null;
-      avatar_url?: string | null;
-    }>();
+  type AuthUserRow = {
+    id: string;
+    full_name?: string | null;
+    email?: string | null;
+    role?: string | null;
+    is_verified?: boolean | null;
+    email_verified?: boolean | null;
+    phone_verified?: boolean | null;
+    avatar_url?: string | null;
+    phone?: string | null;
+    gender?: string | null;
+    date_of_birth?: string | null;
+    home_address?: string | null;
+    office_address?: string | null;
+  };
 
-  if (userError && !isMissingTableOrColumnError(userError)) {
-    throw userError;
+  let userRow: AuthUserRow | null = null;
+
+  const { data: fullUserRow, error: fullUserError } = await client
+    .from(USERS_TABLE)
+    .select(
+      "id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender, date_of_birth, home_address, office_address",
+    )
+    .eq("id", authUser.id)
+    .maybeSingle<AuthUserRow>();
+
+  if (!fullUserError) {
+    userRow = fullUserRow ?? null;
+  } else if (isMissingTableOrColumnError(fullUserError)) {
+    const { data: fallbackUserRow, error: fallbackUserError } = await client
+      .from(USERS_TABLE)
+      .select(
+        "id, full_name, email, role, is_verified, email_verified, phone_verified, avatar_url, phone, gender",
+      )
+      .eq("id", authUser.id)
+      .maybeSingle<AuthUserRow>();
+
+    if (fallbackUserError && !isMissingTableOrColumnError(fallbackUserError)) {
+      throw fallbackUserError;
+    }
+    userRow = fallbackUserRow ?? null;
+  } else {
+    throw fullUserError;
   }
 
   const authUserEmailFields = authUser as {
@@ -478,6 +517,16 @@ async function buildAuthProfileFromToken(
     "User";
   const avatar =
     String(userRow?.avatar_url ?? metadata.avatar_url ?? metadata.picture ?? "").trim() || undefined;
+  const metadataGender = String(metadata.gender ?? "").trim().toLowerCase();
+  const resolvedGenderRaw = String(userRow?.gender ?? metadataGender).trim().toLowerCase();
+  const resolvedGender =
+    resolvedGenderRaw === "male" || resolvedGenderRaw === "female"
+      ? (resolvedGenderRaw as "male" | "female")
+      : undefined;
+  const dateOfBirth = String(userRow?.date_of_birth ?? "").trim() || undefined;
+  const homeAddress = String(userRow?.home_address ?? "").trim() || undefined;
+  const officeAddress = String(userRow?.office_address ?? "").trim() || undefined;
+  const phone = String(userRow?.phone ?? "").trim() || undefined;
 
   return {
     id: String(authUser.id),
@@ -487,8 +536,58 @@ async function buildAuthProfileFromToken(
     isVerified: derivedVerified,
     emailVerified: Boolean(userRow?.email_verified) || emailConfirmedFromAuth,
     phoneVerified: Boolean(userRow?.phone_verified),
+    phone,
+    gender: resolvedGender,
+    dateOfBirth,
+    homeAddress,
+    officeAddress,
     avatar,
   };
+}
+
+type AuthenticatedActor = {
+  userId: string;
+  role: AppUserRole;
+  name: string;
+};
+
+async function resolveAuthenticatedActor(
+  client: SupabaseClient,
+  req: Request,
+): Promise<AuthenticatedActor | null> {
+  const token = getBearerToken(req);
+  if (!token) return null;
+
+  const { data: authData, error: authError } = await client.auth.getUser(token);
+  if (authError || !authData?.user?.id) return null;
+
+  const authUser = authData.user;
+  const userId = String(authUser.id ?? "").trim();
+  if (!userId) return null;
+
+  await ensurePublicUserRow(client, {
+    id: userId,
+    email: authUser.email ?? null,
+    user_metadata: (authUser.user_metadata ?? null) as Record<string, unknown> | null,
+  });
+
+  const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+  const { data: userRow, error: userError } = await client
+    .from(USERS_TABLE)
+    .select("id, full_name, role")
+    .eq("id", userId)
+    .maybeSingle<{ id: string; full_name?: string | null; role?: string | null }>();
+
+  if (userError && !isMissingTableOrColumnError(userError)) {
+    throw userError;
+  }
+
+  const role = normalizeUserRole(userRow?.role ?? metadata.role, { allowAdmin: true });
+  const name =
+    String(userRow?.full_name ?? metadata.full_name ?? metadata.name ?? authUser.email ?? "").trim() ||
+    "User";
+
+  return { userId, role, name };
 }
 
 function getRequestRawBody(req: Request): Buffer {
@@ -699,7 +798,7 @@ function verifySmileCallbackSignature(req: Request): boolean {
   }
 
   const secret = String(process.env.SMILE_ID_CALLBACK_SECRET ?? "").trim();
-  if (!secret) return true;
+  if (!secret) return false;
 
   const configuredPrefix = String(process.env.SMILE_ID_CALLBACK_SIGNATURE_PREFIX ?? "").trim();
   const signatureValues = readSignatureValues(req);
@@ -853,24 +952,50 @@ export async function registerRoutes(
 
       const fullNameRaw = (req.body as Record<string, unknown> | undefined)?.fullName;
       const avatarUrlRaw = (req.body as Record<string, unknown> | undefined)?.avatarUrl;
-      const updates: Record<string, unknown> = {};
+      const dateOfBirthRaw = (req.body as Record<string, unknown> | undefined)?.dateOfBirth;
+      const homeAddressRaw = (req.body as Record<string, unknown> | undefined)?.homeAddress;
+      const officeAddressRaw = (req.body as Record<string, unknown> | undefined)?.officeAddress;
+      const baseUpdates: Record<string, unknown> = {};
+      const verificationProfileUpdates: Record<string, unknown> = {};
 
       if (typeof fullNameRaw === "string") {
         const fullName = fullNameRaw.trim();
-        updates.full_name = fullName.length > 0 ? fullName : null;
+        baseUpdates.full_name = fullName.length > 0 ? fullName : null;
       }
       if (typeof avatarUrlRaw === "string") {
         const avatarUrl = avatarUrlRaw.trim();
-        updates.avatar_url = avatarUrl.length > 0 ? avatarUrl : null;
+        baseUpdates.avatar_url = avatarUrl.length > 0 ? avatarUrl : null;
+      }
+      if (typeof dateOfBirthRaw === "string") {
+        const dateOfBirth = dateOfBirthRaw.trim();
+        verificationProfileUpdates.date_of_birth = dateOfBirth.length > 0 ? dateOfBirth : null;
+      }
+      if (typeof homeAddressRaw === "string") {
+        const homeAddress = homeAddressRaw.trim();
+        verificationProfileUpdates.home_address = homeAddress.length > 0 ? homeAddress : null;
+      }
+      if (typeof officeAddressRaw === "string") {
+        const officeAddress = officeAddressRaw.trim();
+        verificationProfileUpdates.office_address = officeAddress.length > 0 ? officeAddress : null;
       }
 
-      if (Object.keys(updates).length > 0) {
-        const { error: updateError } = await client
+      if (Object.keys(baseUpdates).length > 0) {
+        const { error: baseUpdateError } = await client
           .from(USERS_TABLE)
-          .update(updates)
+          .update(baseUpdates)
           .eq("id", authUser.id);
-        if (updateError && !isMissingTableOrColumnError(updateError)) {
-          throw updateError;
+        if (baseUpdateError && !isMissingTableOrColumnError(baseUpdateError)) {
+          throw baseUpdateError;
+        }
+      }
+
+      if (Object.keys(verificationProfileUpdates).length > 0) {
+        const { error: verificationUpdateError } = await client
+          .from(USERS_TABLE)
+          .update(verificationProfileUpdates)
+          .eq("id", authUser.id);
+        if (verificationUpdateError && !isMissingTableOrColumnError(verificationUpdateError)) {
+          throw verificationUpdateError;
         }
       }
 
@@ -887,18 +1012,25 @@ export async function registerRoutes(
 
   app.get("/api/agent/listings", async (req: Request, res: Response) => {
     try {
-      const actorId = String(req.query?.actorId ?? "").trim();
-      const actorRole = String(req.query?.actorRole ?? "").trim();
-      const actorName = String(req.query?.actorName ?? "").trim();
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
 
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const requestedActorId = String(req.query?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
       }
 
       const rows = await listAgentListings({
-        actorId,
-        actorRole: actorRole || undefined,
-        actorName: actorName || undefined,
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
       });
 
       return res.status(200).json(rows);
@@ -913,9 +1045,21 @@ export async function registerRoutes(
 
   app.post("/api/agent/listings", async (req: Request, res: Response) => {
     try {
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
+
       const title = String(req.body?.title ?? "").trim();
       const listingType = String(req.body?.listingType ?? "").trim();
       const location = String(req.body?.location ?? "").trim();
@@ -931,10 +1075,6 @@ export async function registerRoutes(
         "Sold",
         "Rented",
       ];
-
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
-      }
 
       if (!title || !location) {
         return res.status(400).json({ message: "title and location are required" });
@@ -964,9 +1104,9 @@ export async function registerRoutes(
           status,
         },
         {
-          actorId,
-          actorRole: actorRole || undefined,
-          actorName: actorName || undefined,
+          actorId: authActor.userId,
+          actorRole: authActor.role,
+          actorName: authActor.name,
         },
       );
 
@@ -982,18 +1122,27 @@ export async function registerRoutes(
 
   app.post("/api/agent/listings/:listingId/assets", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase storage is not configured on server." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const listingId = String(req.params?.listingId ?? "").trim();
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "")
-        .trim()
-        .toLowerCase();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
+      const actorId = authActor.userId;
+      const actorRole = authActor.role;
+      const actorName = authActor.name;
 
       if (!listingId) {
         return res.status(400).json({ message: "listingId is required" });
-      }
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
       }
 
       type UploadFilePayload = {
@@ -1042,11 +1191,6 @@ export async function registerRoutes(
 
       if (images.length > 10) {
         return res.status(400).json({ message: "You can upload at most 10 property images." });
-      }
-
-      const client = createSupabaseServiceClient();
-      if (!client) {
-        return res.status(503).json({ message: "Supabase storage is not configured on server." });
       }
 
       const { data: listingRow, error: listingError } = await client
@@ -1227,10 +1371,21 @@ export async function registerRoutes(
 
   app.patch("/api/agent/listings/:listingId", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const listingId = String(req.params?.listingId ?? "").trim();
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
       const title = String(req.body?.title ?? "").trim();
       const listingType = String(req.body?.listingType ?? "").trim();
       const location = String(req.body?.location ?? "").trim();
@@ -1249,10 +1404,6 @@ export async function registerRoutes(
 
       if (!listingId) {
         return res.status(400).json({ message: "listingId is required" });
-      }
-
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
       }
 
       if (!title || !location) {
@@ -1284,9 +1435,9 @@ export async function registerRoutes(
           status,
         },
         {
-          actorId,
-          actorRole: actorRole || undefined,
-          actorName: actorName || undefined,
+          actorId: authActor.userId,
+          actorRole: authActor.role,
+          actorName: authActor.name,
         },
       );
 
@@ -1302,23 +1453,30 @@ export async function registerRoutes(
 
   app.delete("/api/agent/listings/:listingId", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const listingId = String(req.params?.listingId ?? "").trim();
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
 
       if (!listingId) {
         return res.status(400).json({ message: "listingId is required" });
       }
 
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
-      }
-
       const result = await deleteAgentListing(listingId, {
-        actorId,
-        actorRole: actorRole || undefined,
-        actorName: actorName || undefined,
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
       });
 
       return res.status(200).json(result);
@@ -1333,10 +1491,21 @@ export async function registerRoutes(
 
   app.patch("/api/agent/listings/:listingId/status", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const listingId = String(req.params?.listingId ?? "").trim();
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
       const status = String(req.body?.status ?? "").trim() as AgentListingStatus;
       const allowedStatuses: AgentListingStatus[] = [
         "Draft",
@@ -1351,10 +1520,6 @@ export async function registerRoutes(
         return res.status(400).json({ message: "listingId is required" });
       }
 
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
-      }
-
       if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
           message: "status must be one of: Draft, Pending Review, Published, Archived, Sold, Rented",
@@ -1362,9 +1527,9 @@ export async function registerRoutes(
       }
 
       const updated = await updateAgentListingStatus(listingId, status, {
-        actorId,
-        actorRole: actorRole || undefined,
-        actorName: actorName || undefined,
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
       });
 
       return res.status(200).json(updated);
@@ -1379,10 +1544,21 @@ export async function registerRoutes(
 
   app.patch("/api/agent/listings/:listingId/payout", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const listingId = String(req.params?.listingId ?? "").trim();
-      const actorId = String(req.body?.actorId ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
       const payoutStatus = String(req.body?.payoutStatus ?? "").trim() as AgentPayoutStatus;
       const allowedStatuses: AgentPayoutStatus[] = ["Pending", "Paid"];
 
@@ -1390,18 +1566,17 @@ export async function registerRoutes(
         return res.status(400).json({ message: "listingId is required" });
       }
 
-      if (!actorId) {
-        return res.status(400).json({ message: "actorId is required" });
-      }
-
       if (!allowedStatuses.includes(payoutStatus)) {
         return res.status(400).json({ message: "payoutStatus must be one of: Pending, Paid" });
       }
+      if (authActor.role !== "admin") {
+        return res.status(403).json({ message: "Only admins can update payout status." });
+      }
 
       const updated = await updateAgentListingPayoutStatus(listingId, payoutStatus, {
-        actorId,
-        actorRole: actorRole || undefined,
-        actorName: actorName || undefined,
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
       });
 
       return res.status(200).json(updated);
@@ -3217,6 +3392,16 @@ export async function registerRoutes(
 
   app.post("/api/verification/documents/upload", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const userId = String(req.body?.userId ?? "").trim();
       const documentType = String(req.body?.documentType ?? "identity").trim();
       const fileName = String(req.body?.fileName ?? "").trim();
@@ -3225,6 +3410,7 @@ export async function registerRoutes(
       const verificationId = String(req.body?.verificationId ?? "").trim();
       const homeAddressRaw = req.body?.homeAddress;
       const officeAddressRaw = req.body?.officeAddress;
+      const dateOfBirthRaw = req.body?.dateOfBirth;
       const fileSizeRaw = req.body?.fileSizeBytes;
       const fileSizeBytes =
         typeof fileSizeRaw === "number" && Number.isFinite(fileSizeRaw)
@@ -3238,9 +3424,16 @@ export async function registerRoutes(
         typeof officeAddressRaw === "string" && officeAddressRaw.trim().length > 0
           ? officeAddressRaw.trim()
           : undefined;
+      const dateOfBirth =
+        typeof dateOfBirthRaw === "string" && dateOfBirthRaw.trim().length > 0
+          ? dateOfBirthRaw.trim()
+          : undefined;
 
       if (!userId) {
         return res.status(400).json({ message: "userId is required" });
+      }
+      if (userId !== authActor.userId && authActor.role !== "admin") {
+        return res.status(403).json({ message: "userId does not match authenticated user." });
       }
       if (!fileName) {
         return res.status(400).json({ message: "fileName is required" });
@@ -3254,6 +3447,9 @@ export async function registerRoutes(
       if (officeAddress && officeAddress.length > 500) {
         return res.status(400).json({ message: "officeAddress must be 500 characters or fewer." });
       }
+      if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+        return res.status(400).json({ message: "dateOfBirth must be in YYYY-MM-DD format." });
+      }
 
       const uploaded = await uploadVerificationDocument({
         userId,
@@ -3265,10 +3461,17 @@ export async function registerRoutes(
         verificationId: verificationId || undefined,
         homeAddress,
         officeAddress,
+        dateOfBirth,
       });
 
       return res.status(201).json(uploaded);
     } catch (error) {
+      if (error instanceof VerificationDocumentValidationError) {
+        return res.status(400).json({
+          message: error.message,
+          ...(error.details ? { details: error.details } : {}),
+        });
+      }
       const message = error instanceof Error ? error.message : "Failed to upload verification document";
       return res.status(502).json({ message });
     }
@@ -3276,6 +3479,16 @@ export async function registerRoutes(
 
   app.post("/api/verification/smile-id", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const {
         mode = "biometric",
         userId,
@@ -3292,11 +3505,122 @@ export async function registerRoutes(
       if (!userId || typeof userId !== "string") {
         return res.status(400).json({ message: "userId is required" });
       }
+      if (String(userId).trim() !== authActor.userId && authActor.role !== "admin") {
+        return res.status(403).json({ message: "userId does not match authenticated user." });
+      }
 
       if (mode !== "kyc" && mode !== "biometric") {
         return res
           .status(400)
           .json({ message: "mode must be either 'kyc' or 'biometric'" });
+      }
+
+      const normalizedVerificationId = String(verificationId ?? "").trim();
+      type VerificationLookupRow = {
+        id: string;
+        user_id: string;
+        home_address?: string | null;
+        date_of_birth?: string | null;
+      };
+
+      const loadVerificationRow = async (
+        includeDateOfBirth: boolean,
+      ): Promise<{ data: VerificationLookupRow | null; error: unknown | null }> => {
+        const selectColumns = includeDateOfBirth
+          ? "id, user_id, home_address, date_of_birth"
+          : "id, user_id, home_address";
+
+        if (normalizedVerificationId) {
+          const { data, error } = await client
+            .from(VERIFICATIONS_TABLE)
+            .select(selectColumns)
+            .eq("id", normalizedVerificationId)
+            .eq("user_id", userId)
+            .maybeSingle<VerificationLookupRow>();
+          return { data: data ?? null, error: error ?? null };
+        }
+
+        const { data, error } = await client
+          .from(VERIFICATIONS_TABLE)
+          .select(selectColumns)
+          .eq("user_id", userId)
+          .order("updated_at", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle<VerificationLookupRow>();
+        return { data: data ?? null, error: error ?? null };
+      };
+
+      let verificationLookup = await loadVerificationRow(true);
+      if (verificationLookup.error && isMissingTableOrColumnError(verificationLookup.error)) {
+        verificationLookup = await loadVerificationRow(false);
+      }
+
+      if (verificationLookup.error && !isMissingTableOrColumnError(verificationLookup.error)) {
+        throw verificationLookup.error;
+      }
+
+      const verificationRow = verificationLookup.data;
+
+      if (!verificationRow?.id) {
+        return res.status(400).json({
+          message:
+            "Upload your government ID and utility bill before starting biometric verification.",
+        });
+      }
+
+      const { data: verificationDocs, error: docsError } = await client
+        .from(VERIFICATION_DOCUMENTS_TABLE)
+        .select("document_type")
+        .eq("verification_id", verificationRow.id);
+
+      if (docsError && !isMissingTableOrColumnError(docsError)) {
+        throw docsError;
+      }
+
+      const documentTypes = new Set(
+        (Array.isArray(verificationDocs) ? verificationDocs : []).map((row) =>
+          String((row as { document_type?: string }).document_type ?? "").trim().toLowerCase(),
+        ),
+      );
+      if (!documentTypes.has("identity")) {
+        return res.status(400).json({ message: "Government ID upload is required before scan." });
+      }
+      if (!documentTypes.has("utility_bill")) {
+        return res.status(400).json({ message: "Utility bill upload is required before scan." });
+      }
+
+      let verificationHomeAddress = String(verificationRow.home_address ?? "").trim();
+      if (!verificationHomeAddress) {
+        const { data: userHomeAddress, error: userHomeAddressError } = await client
+          .from(USERS_TABLE)
+          .select("home_address")
+          .eq("id", userId)
+          .maybeSingle<{ home_address?: string | null }>();
+
+        if (userHomeAddressError && !isMissingTableOrColumnError(userHomeAddressError)) {
+          throw userHomeAddressError;
+        }
+        verificationHomeAddress = String(userHomeAddress?.home_address ?? "").trim();
+      }
+
+      if (!verificationHomeAddress) {
+        return res.status(400).json({ message: "Home address is required before scan." });
+      }
+
+      let resolvedDateOfBirth =
+        String(dateOfBirth ?? "").trim() || String(verificationRow.date_of_birth ?? "").trim();
+      if (!resolvedDateOfBirth) {
+        const { data: userDateOfBirth, error: userDateOfBirthError } = await client
+          .from(USERS_TABLE)
+          .select("date_of_birth")
+          .eq("id", userId)
+          .maybeSingle<{ date_of_birth?: string | null }>();
+
+        if (userDateOfBirthError && !isMissingTableOrColumnError(userDateOfBirthError)) {
+          throw userDateOfBirthError;
+        }
+        resolvedDateOfBirth = String(userDateOfBirth?.date_of_birth ?? "").trim();
       }
 
       const result = await submitSmileIdVerification({
@@ -3307,36 +3631,32 @@ export async function registerRoutes(
         idNumber,
         firstName,
         lastName,
-        dateOfBirth,
+        dateOfBirth: resolvedDateOfBirth || undefined,
         selfieImageBase64,
       });
 
       let linkedToExistingVerification = false;
-      const normalizedVerificationId = String(verificationId ?? "").trim();
       if (normalizedVerificationId) {
-        const client = createSupabaseServiceClient();
-        if (client) {
-          const { data: updated, error: updateError } = await client
-            .from(VERIFICATIONS_TABLE)
-            .update({
-              mode,
-              provider: result.provider,
-              status: result.status,
-              job_id: result.jobId,
-              smile_job_id: result.smileJobId ?? null,
-              message: result.message,
-            })
-            .eq("id", normalizedVerificationId)
-            .eq("user_id", userId)
-            .select("id")
-            .maybeSingle<{ id: string }>();
+        const { data: updated, error: updateError } = await client
+          .from(VERIFICATIONS_TABLE)
+          .update({
+            mode,
+            provider: result.provider,
+            status: result.status,
+            job_id: result.jobId,
+            smile_job_id: result.smileJobId ?? null,
+            message: result.message,
+          })
+          .eq("id", normalizedVerificationId)
+          .eq("user_id", userId)
+          .select("id")
+          .maybeSingle<{ id: string }>();
 
-          if (updateError && !isMissingTableOrColumnError(updateError)) {
-            throw new Error(`Failed to attach Smile result to existing verification: ${updateError.message}`);
-          }
-
-          linkedToExistingVerification = Boolean(updated?.id);
+        if (updateError && !isMissingTableOrColumnError(updateError)) {
+          throw new Error(`Failed to attach Smile result to existing verification: ${updateError.message}`);
         }
+
+        linkedToExistingVerification = Boolean(updated?.id);
       }
 
       if (!linkedToExistingVerification) {
@@ -3369,9 +3689,22 @@ export async function registerRoutes(
 
   app.get("/api/verification/status/:userId", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
       const userId = String(req.params?.userId ?? "").trim();
       if (!userId) {
         return res.status(400).json({ message: "userId is required" });
+      }
+      if (userId !== authActor.userId && authActor.role !== "admin") {
+        return res.status(403).json({ message: "userId does not match authenticated user." });
       }
 
       const snapshot = await getUserVerificationSnapshot(userId);
@@ -3486,25 +3819,6 @@ export async function registerRoutes(
         mappedStatus,
         message,
       );
-
-      if (!updatedVerification && userIdFromCallback) {
-        const fallbackJobId = jobId || smileJobId || `smile-callback-${Date.now()}`;
-        await saveVerification({
-          user_id: userIdFromCallback,
-          mode: "biometric",
-          provider: "smile-id",
-          status: mappedStatus,
-          job_id: fallbackJobId,
-          smile_job_id: smileJobId || null,
-          message,
-        });
-        updatedVerification = {
-          userId: userIdFromCallback,
-          status: mappedStatus,
-          previousStatus: mappedStatus,
-          changed: true,
-        };
-      }
 
       if (!updatedVerification) {
         return res.status(404).json({ message: "Verification job not found" });

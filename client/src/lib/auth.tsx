@@ -14,6 +14,11 @@ interface User {
   isVerified: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
+  phone?: string;
+  gender?: "male" | "female";
+  dateOfBirth?: string;
+  homeAddress?: string;
+  officeAddress?: string;
   avatar?: string;
 }
 
@@ -35,7 +40,7 @@ interface AuthContextType {
   signIn: (payload: SignInPayload) => Promise<void>;
   signUp: (payload: SignUpPayload) => Promise<boolean>;
   logout: () => Promise<void>;
-  verifyIdentity: (options?: { verificationId?: string }) => Promise<boolean>;
+  verifyIdentity: (options?: { verificationId?: string; dateOfBirth?: string }) => Promise<boolean>;
   refreshUserProfile: () => Promise<void>;
   updateProfileAvatar: (file: File) => Promise<void>;
 }
@@ -171,6 +176,11 @@ function toAppUser(payload: {
   isVerified?: boolean;
   emailVerified?: boolean;
   phoneVerified?: boolean;
+  phone?: string;
+  gender?: string;
+  dateOfBirth?: string;
+  homeAddress?: string;
+  officeAddress?: string;
   avatar?: string;
 }): User {
   const email = String(payload.email ?? "").trim();
@@ -187,6 +197,15 @@ function toAppUser(payload: {
     isVerified: Boolean(payload.isVerified),
     emailVerified: Boolean(payload.emailVerified),
     phoneVerified: Boolean(payload.phoneVerified),
+    phone: String(payload.phone ?? "").trim() || undefined,
+    gender:
+      String(payload.gender ?? "").trim().toLowerCase() === "male" ||
+      String(payload.gender ?? "").trim().toLowerCase() === "female"
+        ? (String(payload.gender ?? "").trim().toLowerCase() as "male" | "female")
+        : undefined,
+    dateOfBirth: String(payload.dateOfBirth ?? "").trim() || undefined,
+    homeAddress: String(payload.homeAddress ?? "").trim() || undefined,
+    officeAddress: String(payload.officeAddress ?? "").trim() || undefined,
     avatar: String(payload.avatar ?? "").trim() || undefined,
   };
 }
@@ -257,6 +276,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isVerified?: boolean;
         emailVerified?: boolean;
         phoneVerified?: boolean;
+        phone?: string;
+        gender?: string;
+        dateOfBirth?: string;
+        homeAddress?: string;
+        officeAddress?: string;
         avatar?: string;
       };
       return toAppUser(payload);
@@ -579,7 +603,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const verifyIdentity = async (
-    options?: { verificationId?: string },
+    options?: { verificationId?: string; dateOfBirth?: string },
   ): Promise<boolean> => {
     if (!user) return false;
 
@@ -592,6 +616,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         country: "NG",
         firstName: user.name.split(" ")[0],
         lastName: user.name.split(" ").slice(1).join(" ") || "User",
+        dateOfBirth: options?.dateOfBirth,
       });
 
       let isApproved = verification.status === "approved";
@@ -666,6 +691,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isVerified?: boolean;
       emailVerified?: boolean;
       phoneVerified?: boolean;
+      phone?: string;
+      gender?: string;
+      dateOfBirth?: string;
+      homeAddress?: string;
+      officeAddress?: string;
       avatar?: string;
     };
     setUser(toAppUser(payload));
