@@ -234,6 +234,7 @@ export default function ModernAgentDashboardView({
   const { toast } = useToast();
   const role = String(user?.role ?? "").toLowerCase();
   const isAdmin = role === "admin";
+  const canEditVerificationProgress = isAdmin;
   const dashboardTitle =
     role === "admin"
       ? "Admin Listings Console"
@@ -792,6 +793,15 @@ export default function ModernAgentDashboardView({
     stepKey: string,
     status: VerificationStepStatus,
   ) => {
+    if (!canEditVerificationProgress) {
+      toast({
+        title: "Admin action only",
+        description: "Only admins can update property verification check progress.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     mutateListings((current) =>
       current.map((item) => {
         if (item.id !== listing.id) return item;
@@ -1065,6 +1075,11 @@ export default function ModernAgentDashboardView({
                   {verificationListing.title} - {selectedCompletedChecks}/{selectedVerificationSteps.length} checks
                   completed.
                 </DialogDescription>
+                {!canEditVerificationProgress && (
+                  <p className="text-xs font-medium text-amber-700">
+                    Read-only for this role. Only admins can complete verification checks or publish listings.
+                  </p>
+                )}
               </DialogHeader>
               <div className="space-y-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -1086,8 +1101,9 @@ export default function ModernAgentDashboardView({
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className={statusBadgeClass(step.status)}>{toStatusLabel(step.status)}</Badge>
                           <select
-                            className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                            className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                             value={step.status}
+                            disabled={!canEditVerificationProgress}
                             onChange={(event) =>
                               updateVerificationStepStatus(
                                 verificationListing,
@@ -1111,24 +1127,26 @@ export default function ModernAgentDashboardView({
                 <Button variant="outline" onClick={() => setVerificationListing(null)}>
                   Close
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    mutateListings((current) =>
-                      current.map((item) =>
-                        item.id === verificationListing.id
-                          ? { ...item, verificationSteps: completeAllSteps(ensureVerificationSteps(item)) }
-                          : item,
-                      ),
-                    );
-                    toast({
-                      title: "Checks completed",
-                      description: "All verification checks were marked completed.",
-                    });
-                  }}
-                >
-                  Complete All Checks
-                </Button>
+                {canEditVerificationProgress && (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      mutateListings((current) =>
+                        current.map((item) =>
+                          item.id === verificationListing.id
+                            ? { ...item, verificationSteps: completeAllSteps(ensureVerificationSteps(item)) }
+                            : item,
+                        ),
+                      );
+                      toast({
+                        title: "Checks completed",
+                        description: "All verification checks were marked completed.",
+                      });
+                    }}
+                  >
+                    Complete All Checks
+                  </Button>
+                )}
                 {canPublishFromVerification && (
                   <Button onClick={() => void setListingStatus(verificationListing, "Published")}>
                     Publish Listing

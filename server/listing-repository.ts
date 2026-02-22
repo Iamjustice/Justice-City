@@ -101,19 +101,51 @@ function getClient(): SupabaseClient | null {
 function isTableMissingError(error: { message?: string } | null): boolean {
   if (!error?.message) return false;
   const message = error.message.toLowerCase();
-  return message.includes("relation") && message.includes("does not exist");
+  return (
+    (message.includes("relation") && message.includes("does not exist")) ||
+    (message.includes("schema cache") &&
+      (message.includes("could not find the table") ||
+        (message.includes("table") && message.includes("not found"))))
+  );
 }
 
 function isColumnMissingError(error: { message?: string } | null): boolean {
   if (!error?.message) return false;
-  return String(error.message).toLowerCase().includes("column") &&
-    String(error.message).toLowerCase().includes("does not exist");
+  const message = String(error.message).toLowerCase();
+  return (
+    (message.includes("column") && message.includes("does not exist")) ||
+    (message.includes("schema cache") &&
+      (message.includes("could not find the column") ||
+        (message.includes("column") && message.includes("not found"))))
+  );
 }
 
 function isDuplicateError(error: { message?: string; code?: string } | null): boolean {
   if (!error) return false;
   if (error.code === "23505") return true;
   return String(error.message ?? "").toLowerCase().includes("duplicate key");
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const message = String(error.message ?? "").trim();
+    return message || "Unknown error";
+  }
+
+  if (error && typeof error === "object") {
+    const payload = error as Record<string, unknown>;
+    const parts = [
+      String(payload.message ?? "").trim(),
+      String(payload.details ?? "").trim(),
+      String(payload.hint ?? "").trim(),
+      String(payload.code ?? "").trim(),
+    ].filter(Boolean);
+    if (parts.length > 0) {
+      return parts.join(" | ");
+    }
+  }
+
+  return "Unknown error";
 }
 
 function throwForbidden(message: string): never {
@@ -645,7 +677,8 @@ export async function listAgentListings(
     }
 
     const roleFromDb = await getUserRole(client, actorId);
-    const isAdmin = isAdminRole(roleFromDb ?? undefined);
+    const effectiveRole = roleFromDb ?? actor.actorRole ?? undefined;
+    const isAdmin = isAdminRole(effectiveRole);
 
     let query = client
       .from(LISTINGS_TABLE)
@@ -684,7 +717,7 @@ export async function listAgentListings(
       return listFallbackListings(actorId, actor.actorRole);
     }
 
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     throw new Error(`Failed to load listings: ${message}`);
   }
 }
@@ -767,7 +800,7 @@ export async function updateAgentListingStatus(
 
     return mapped;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     if (message.startsWith(FORBIDDEN_PREFIX)) {
       throw error;
     }
@@ -871,7 +904,7 @@ export async function updateAgentListingPayoutStatus(
       return updated;
     }
 
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     if (message.startsWith(FORBIDDEN_PREFIX)) {
       throw error;
     }
@@ -926,10 +959,11 @@ export async function createAgentListing(
     }
 
     const roleFromDb = await getUserRole(client, actorId);
-    if (!canCreateListing(roleFromDb ?? undefined)) {
+    const effectiveRole = roleFromDb ?? actor.actorRole ?? undefined;
+    if (!canCreateListing(effectiveRole)) {
       throwForbidden("Only agents, sellers, owners, or admins can create listings.");
     }
-    const isAdmin = isAdminRole(roleFromDb ?? undefined);
+    const isAdmin = isAdminRole(effectiveRole);
     assertStatusChangeAllowedForActor(requestedStatus, {
       isAdmin,
       currentStatus: null,
@@ -996,7 +1030,7 @@ export async function createAgentListing(
       return fallbackListing;
     }
 
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     if (message.startsWith(FORBIDDEN_PREFIX)) {
       throw error;
     }
@@ -1161,7 +1195,7 @@ export async function updateAgentListing(
       return updated;
     }
 
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     if (message.startsWith(FORBIDDEN_PREFIX)) {
       throw error;
     }
@@ -1218,7 +1252,7 @@ export async function deleteAgentListing(
       return { ok: true, listingId };
     }
 
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = toErrorMessage(error);
     if (message.startsWith(FORBIDDEN_PREFIX)) {
       throw error;
     }
