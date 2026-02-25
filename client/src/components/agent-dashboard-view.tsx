@@ -45,57 +45,16 @@ import {
   fetchAgentListings,
   updateAgentListing as updateAgentListingApi,
   updateAgentListingPayoutStatus as updateAgentListingPayoutStatusApi,
+  updateAgentListingVerificationStepStatus as updateAgentListingVerificationStepStatusApi,
+  type AgentListingVerificationStep,
+  type AgentListingVerificationStepStatus,
   updateAgentListingStatus as updateAgentListingStatusApi,
   type AgentListingStatus,
   type AgentPayoutStatus,
 } from "@/lib/agent-listings";
 
-type VerificationStepStatus = "completed" | "in_progress" | "pending" | "blocked";
-
-type VerificationStep = {
-  key: string;
-  label: string;
-  description: string;
-  status: VerificationStepStatus;
-};
-
-const VERIFICATION_STEP_BLUEPRINT: Omit<VerificationStep, "status">[] = [
-  {
-    key: "ownership",
-    label: "Ownership Verification",
-    description: "Validate ownership records against title registry entries.",
-  },
-  {
-    key: "ownership_authorization",
-    label: "Ownership Authorization",
-    description: "Confirm owner-issued authorization to list and market the property.",
-  },
-  {
-    key: "survey",
-    label: "Survey Verification",
-    description: "Review survey plan details and boundary coordinates.",
-  },
-  {
-    key: "right_of_way",
-    label: "Right of Way Verification",
-    description: "Confirm legal access roads and easement compliance.",
-  },
-  {
-    key: "ministerial_charting",
-    label: "Ministerial Charting",
-    description: "Check government acquisition status and charting records.",
-  },
-  {
-    key: "legal_verification",
-    label: "Legal Verification",
-    description: "Validate legal standing and applicable encumbrances.",
-  },
-  {
-    key: "property_document_verification",
-    label: "Property Document Verification",
-    description: "Audit title documents (C of O, deed, survey, supporting files).",
-  },
-];
+type VerificationStepStatus = AgentListingVerificationStepStatus;
+type VerificationStep = AgentListingVerificationStep;
 
 const TOTAL_COMMISSION_RATE = 0.05;
 const AGENT_COMMISSION_SHARE = 0.6;
@@ -141,36 +100,6 @@ function listingBadgeClass(status: string): string {
   return "bg-slate-100 text-slate-600 border-slate-200";
 }
 
-function completeAllSteps(steps?: VerificationStep[]): VerificationStep[] {
-  const source = Array.isArray(steps) && steps.length > 0 ? steps : VERIFICATION_STEP_BLUEPRINT;
-  return source.map((step) => ({ ...step, status: "completed" as const }));
-}
-
-function resetStepsByStatus(status: string, steps?: VerificationStep[]): VerificationStep[] {
-  const source = Array.isArray(steps) && steps.length > 0 ? steps : VERIFICATION_STEP_BLUEPRINT;
-
-  if (status === "Published") {
-    return source.map((step) => ({ ...step, status: "completed" as const }));
-  }
-
-  if (status === "Draft") {
-    return source.map((step) => ({ ...step, status: "pending" as const }));
-  }
-
-  if (status === "Archived") {
-    return source.map((step, index) => ({
-      ...step,
-      status: index < 2 ? ("completed" as const) : ("pending" as const),
-    }));
-  }
-
-  return source.map((step, index) => ({
-    ...step,
-    status:
-      index === 0 ? ("completed" as const) : index === 1 ? ("in_progress" as const) : ("pending" as const),
-  }));
-}
-
 function ensureVerificationSteps(listing: any): VerificationStep[] {
   const existing = Array.isArray(listing?.verificationSteps) ? listing.verificationSteps : [];
   if (existing.length > 0) {
@@ -181,7 +110,7 @@ function ensureVerificationSteps(listing: any): VerificationStep[] {
       status: (step.status as VerificationStepStatus) ?? "pending",
     }));
   }
-  return resetStepsByStatus(String(listing?.status ?? "Draft"));
+  return [];
 }
 
 function progressValue(steps: VerificationStep[]): number {
@@ -535,10 +464,6 @@ export default function ModernAgentDashboardView({
         description: editingForm.description.trim() || "No description provided yet.",
         status: requestedStatus,
         price: normalizePrice(editingForm.price),
-        verificationSteps:
-          requestedStatus === "Published" || isClosedDealStatus(requestedStatus)
-            ? completeAllSteps(ensureVerificationSteps(editingListing))
-            : resetStepsByStatus(requestedStatus, ensureVerificationSteps(editingListing)),
       };
       upsertListingInState(localUpdated);
       toast({
@@ -581,13 +506,6 @@ export default function ModernAgentDashboardView({
       const merged = {
         ...editingListing,
         ...updated,
-        verificationSteps:
-          updated.status === "Published" || isClosedDealStatus(String(updated.status ?? ""))
-            ? completeAllSteps(ensureVerificationSteps({ ...editingListing, ...updated }))
-            : resetStepsByStatus(
-                String(updated.status ?? "Draft"),
-                ensureVerificationSteps({ ...editingListing, ...updated }),
-              ),
       };
       upsertListingInState(merged);
 
@@ -631,10 +549,6 @@ export default function ModernAgentDashboardView({
       const merged: any = {
         ...listing,
         status,
-        verificationSteps:
-          status === "Published" || isClosedDealStatus(status)
-            ? completeAllSteps(ensureVerificationSteps(listing))
-            : resetStepsByStatus(status, ensureVerificationSteps(listing)),
       };
 
       if (isClosedDealStatus(status)) {
@@ -680,10 +594,6 @@ export default function ModernAgentDashboardView({
       const merged = {
         ...listing,
         ...updated,
-        verificationSteps:
-          status === "Published" || isClosedDealStatus(status)
-            ? completeAllSteps(ensureVerificationSteps({ ...listing, ...updated }))
-            : resetStepsByStatus(status, ensureVerificationSteps({ ...listing, ...updated })),
       };
       upsertListingInState(merged);
 
@@ -843,7 +753,7 @@ export default function ModernAgentDashboardView({
     }
   };
 
-  const updateVerificationStepStatus = (
+  const updateVerificationStepStatus = async (
     listing: any,
     stepKey: string,
     status: VerificationStepStatus,
@@ -856,16 +766,86 @@ export default function ModernAgentDashboardView({
       });
       return;
     }
+    const listingId = String(listing?.id ?? "").trim();
+    const actorId = String(user?.id ?? "").trim();
+    if (!isUuidListingId(listingId) || !actorId) {
+      toast({
+        title: "DB-backed checks only",
+        description: "Verification checks can only be updated for persisted listings.",
+        variant: "destructive",
+      });
+      return;
+    }
 
-    mutateListings((current) =>
-      current.map((item) => {
-        if (item.id !== listing.id) return item;
-        const steps = ensureVerificationSteps(item).map((step) =>
-          step.key === stepKey ? { ...step, status } : step,
-        );
-        return { ...item, verificationSteps: steps };
-      }),
-    );
+    setListingActionInFlightId(String(listing.id));
+    try {
+      const updated = await updateAgentListingVerificationStepStatusApi(listingId, stepKey, status, {
+        actorId,
+        actorRole: user?.role ?? undefined,
+        actorName: user?.name ?? undefined,
+      });
+      upsertListingInState({ ...listing, ...updated });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update verification check.";
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setListingActionInFlightId(null);
+    }
+  };
+
+  const completeAllVerificationChecks = async (listing: any) => {
+    if (!canEditVerificationProgress) return;
+    const listingId = String(listing?.id ?? "").trim();
+    const actorId = String(user?.id ?? "").trim();
+    const currentSteps = ensureVerificationSteps(listing);
+    if (currentSteps.length === 0) {
+      toast({
+        title: "No checks to complete",
+        description: "No verification checks are initialized for this listing yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!isUuidListingId(listingId) || !actorId) {
+      toast({
+        title: "DB-backed checks only",
+        description: "Verification checks are only available for persisted listings.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setListingActionInFlightId(String(listing.id));
+    try {
+      let latest = listing;
+      for (const step of currentSteps) {
+        if (step.status === "completed") continue;
+        latest = await updateAgentListingVerificationStepStatusApi(listingId, step.key, "completed", {
+          actorId,
+          actorRole: user?.role ?? undefined,
+          actorName: user?.name ?? undefined,
+        });
+      }
+      upsertListingInState({ ...listing, ...latest });
+      toast({
+        title: "Checks completed",
+        description: "All verification checks were marked completed.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to complete verification checks.";
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setListingActionInFlightId(null);
+    }
   };
 
   const selectedVerificationSteps = verificationListing ? ensureVerificationSteps(verificationListing) : [];
@@ -1146,6 +1126,11 @@ export default function ModernAgentDashboardView({
                 </div>
 
                 <div className="space-y-3">
+                  {selectedVerificationSteps.length === 0 && (
+                    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-sm text-slate-500">
+                      Verification checks are not initialized yet for this listing.
+                    </div>
+                  )}
                   {selectedVerificationSteps.map((step) => (
                     <div key={step.key} className="rounded-lg border border-slate-200 p-3">
                       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1159,8 +1144,9 @@ export default function ModernAgentDashboardView({
                             <select
                               className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
                               value={step.status}
+                              disabled={listingActionInFlightId === String(verificationListing.id)}
                               onChange={(event) =>
-                                updateVerificationStepStatus(
+                                void updateVerificationStepStatus(
                                   verificationListing,
                                   step.key,
                                   event.target.value as VerificationStepStatus,
@@ -1186,19 +1172,8 @@ export default function ModernAgentDashboardView({
                 {canEditVerificationProgress && (
                   <Button
                     variant="outline"
-                    onClick={() => {
-                      mutateListings((current) =>
-                        current.map((item) =>
-                          item.id === verificationListing.id
-                            ? { ...item, verificationSteps: completeAllSteps(ensureVerificationSteps(item)) }
-                            : item,
-                        ),
-                      );
-                      toast({
-                        title: "Checks completed",
-                        description: "All verification checks were marked completed.",
-                      });
-                    }}
+                    disabled={listingActionInFlightId === String(verificationListing.id)}
+                    onClick={() => void completeAllVerificationChecks(verificationListing)}
                   >
                     Complete All Checks
                   </Button>

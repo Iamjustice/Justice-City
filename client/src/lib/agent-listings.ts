@@ -8,6 +8,19 @@ export type AgentListingStatus =
   | "Sold"
   | "Rented";
 export type AgentPayoutStatus = "Pending" | "Paid";
+export type AgentListingVerificationStepStatus =
+  | "completed"
+  | "in_progress"
+  | "pending"
+  | "blocked";
+
+export type AgentListingVerificationStep = {
+  key: string;
+  label: string;
+  description: string;
+  status: AgentListingVerificationStepStatus;
+  checkedAt?: string;
+};
 
 export type AgentListing = {
   id: string;
@@ -27,6 +40,7 @@ export type AgentListing = {
   companyCommission?: number;
   agentPayoutStatus?: AgentPayoutStatus;
   closedAt?: string;
+  verificationSteps?: AgentListingVerificationStep[];
 };
 
 export type UpsertAgentListingInput = {
@@ -180,6 +194,26 @@ export async function updateAgentListingPayoutStatus(
     actorName: actor.actorName,
     payoutStatus,
   });
+
+  return response.json();
+}
+
+export async function updateAgentListingVerificationStepStatus(
+  listingId: string,
+  stepKey: string,
+  status: AgentListingVerificationStepStatus,
+  actor: ListingActor,
+): Promise<AgentListing> {
+  const response = await apiRequest(
+    "PATCH",
+    `/api/agent/listings/${encodeURIComponent(listingId)}/verification-steps/${encodeURIComponent(stepKey)}`,
+    {
+      actorId: actor.actorId,
+      actorRole: actor.actorRole,
+      actorName: actor.actorName,
+      status,
+    },
+  );
 
   return response.json();
 }

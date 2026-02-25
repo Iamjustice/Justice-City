@@ -29,9 +29,11 @@ import {
   createAgentListing,
   deleteAgentListing,
   listAgentListings,
+  updateListingVerificationStepStatus,
   updateAgentListing,
   updateAgentListingPayoutStatus,
   updateAgentListingStatus,
+  type AgentListingVerificationStepStatus,
   type AgentListingStatus,
   type AgentPayoutStatus,
 } from "./listing-repository";
@@ -1622,6 +1624,64 @@ export async function registerRoutes(
       const message = error instanceof Error ? error.message : "Failed to update listing status";
       if (message.startsWith("FORBIDDEN:")) {
         return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+      }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.patch("/api/agent/listings/:listingId/verification-steps/:stepKey", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const listingId = String(req.params?.listingId ?? "").trim();
+      const stepKey = String(req.params?.stepKey ?? "").trim();
+      const requestedActorId = String(req.body?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
+
+      const status = String(req.body?.status ?? "").trim() as AgentListingVerificationStepStatus;
+      const allowedStatuses: AgentListingVerificationStepStatus[] = [
+        "pending",
+        "in_progress",
+        "completed",
+        "blocked",
+      ];
+
+      if (!listingId) {
+        return res.status(400).json({ message: "listingId is required" });
+      }
+      if (!stepKey) {
+        return res.status(400).json({ message: "stepKey is required" });
+      }
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          message: "status must be one of: pending, in_progress, completed, blocked",
+        });
+      }
+
+      const updated = await updateListingVerificationStepStatus(listingId, stepKey, status, {
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
+      });
+
+      return res.status(200).json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update verification step";
+      if (message.startsWith("FORBIDDEN:")) {
+        return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+      }
+      if (message.toLowerCase().includes("not configured")) {
+        return res.status(503).json({ message });
       }
       return res.status(502).json({ message });
     }

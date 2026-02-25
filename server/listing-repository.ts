@@ -8,6 +8,10 @@ const LISTING_COMMISSIONS_TABLE =
   process.env.SUPABASE_LISTING_COMMISSIONS_TABLE || "listing_commissions";
 const LISTING_RECORD_FOLDERS_TABLE =
   process.env.SUPABASE_LISTING_RECORD_FOLDERS_TABLE || "listing_record_folders";
+const LISTING_VERIFICATION_CASES_TABLE =
+  process.env.SUPABASE_LISTING_VERIFICATION_CASES_TABLE || "listing_verification_cases";
+const LISTING_VERIFICATION_STEPS_TABLE =
+  process.env.SUPABASE_LISTING_VERIFICATION_STEPS_TABLE || "listing_verification_steps";
 
 const FORBIDDEN_PREFIX = "FORBIDDEN:";
 
@@ -35,6 +39,20 @@ export type AgentListingStatus =
 
 export type AgentPayoutStatus = "Pending" | "Paid";
 
+export type AgentListingVerificationStepStatus =
+  | "completed"
+  | "in_progress"
+  | "pending"
+  | "blocked";
+
+export type AgentListingVerificationStep = {
+  key: string;
+  label: string;
+  description: string;
+  status: AgentListingVerificationStepStatus;
+  checkedAt?: string;
+};
+
 export type AgentListingRecord = {
   id: string;
   agentId?: string;
@@ -53,6 +71,7 @@ export type AgentListingRecord = {
   companyCommission?: number;
   agentPayoutStatus?: AgentPayoutStatus;
   closedAt?: string;
+  verificationSteps?: AgentListingVerificationStep[];
 };
 
 type FallbackListingRecord = AgentListingRecord & { agentId: string };
@@ -86,6 +105,82 @@ type ListingCommissionRow = {
   agent_payout_status: string | null;
   closed_at: string | null;
 };
+
+type ListingVerificationCaseRow = {
+  id: string;
+  listing_id: string;
+  status: string | null;
+};
+
+type ListingVerificationStepRow = {
+  case_id: string;
+  step_key: string;
+  status: string | null;
+  checked_at: string | null;
+  created_at: string | null;
+};
+
+const VERIFICATION_STEP_BLUEPRINT: Array<{
+  key: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "ownership",
+    label: "Ownership Verification",
+    description: "Validate ownership records against title registry entries.",
+  },
+  {
+    key: "ownership_authorization",
+    label: "Ownership Authorization",
+    description: "Confirm owner-issued authorization to list and market the property.",
+  },
+  {
+    key: "survey",
+    label: "Survey Verification",
+    description: "Review survey plan details and boundary coordinates.",
+  },
+  {
+    key: "right_of_way",
+    label: "Right of Way Verification",
+    description: "Confirm legal access roads and easement compliance.",
+  },
+  {
+    key: "ministerial_charting",
+    label: "Ministerial Charting",
+    description: "Check government acquisition status and charting records.",
+  },
+  {
+    key: "legal_verification",
+    label: "Legal Verification",
+    description: "Validate legal standing and applicable encumbrances.",
+  },
+  {
+    key: "property_document_verification",
+    label: "Property Document Verification",
+    description: "Audit title documents (C of O, deed, survey, supporting files).",
+  },
+];
+
+const VERIFICATION_STEP_ORDER = new Map<string, number>(
+  VERIFICATION_STEP_BLUEPRINT.map((step, index) => [step.key, index] as [string, number]),
+);
+const VERIFICATION_STEP_META = new Map<
+  string,
+  {
+    label: string;
+    description: string;
+  }
+>(
+  VERIFICATION_STEP_BLUEPRINT.map((step) => [
+    step.key,
+    {
+      label: step.label,
+      description: step.description,
+    },
+  ]),
+);
+const VERIFICATION_STEP_KEYS = new Set<string>(VERIFICATION_STEP_BLUEPRINT.map((step) => step.key));
 
 function getClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
@@ -340,6 +435,54 @@ function toDbPayoutStatus(rawStatus: AgentPayoutStatus | string): DbPayoutStatus
   return "pending";
 }
 
+function toVerificationStepStatus(rawStatus: unknown): AgentListingVerificationStepStatus {
+  const normalized = String(rawStatus ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "completed") return "completed";
+  if (normalized === "in_progress") return "in_progress";
+  if (normalized === "blocked") return "blocked";
+  return "pending";
+}
+
+function isSupportedVerificationStepStatus(rawStatus: unknown): rawStatus is AgentListingVerificationStepStatus {
+  const normalized = String(rawStatus ?? "")
+    .trim()
+    .toLowerCase();
+  return normalized === "pending" || normalized === "in_progress" || normalized === "completed" || normalized === "blocked";
+}
+
+function normalizeVerificationStepKey(rawStepKey: unknown): string {
+  return String(rawStepKey ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function mapVerificationStepRow(row: ListingVerificationStepRow): AgentListingVerificationStep | null {
+  const stepKey = normalizeVerificationStepKey(row.step_key);
+  if (!stepKey) return null;
+  const meta = VERIFICATION_STEP_META.get(stepKey);
+  if (!meta) return null;
+
+  const checkedAtRaw = String(row.checked_at ?? "").trim();
+  return {
+    key: stepKey,
+    label: meta.label,
+    description: meta.description,
+    status: toVerificationStepStatus(row.status),
+    checkedAt: checkedAtRaw || undefined,
+  };
+}
+
+function sortVerificationSteps(steps: AgentListingVerificationStep[]): AgentListingVerificationStep[] {
+  return [...steps].sort((a, b) => {
+    const left = VERIFICATION_STEP_ORDER.get(a.key) ?? Number.MAX_SAFE_INTEGER;
+    const right = VERIFICATION_STEP_ORDER.get(b.key) ?? Number.MAX_SAFE_INTEGER;
+    if (left !== right) return left - right;
+    return a.key.localeCompare(b.key);
+  });
+}
+
 function buildCommissionFallbackFromPrice(price: string): {
   dealAmount: number;
   totalCommission: number;
@@ -444,9 +587,84 @@ async function fetchListingCommissions(
   return byListingId;
 }
 
+async function fetchListingVerificationSteps(
+  client: SupabaseClient,
+  listingIds: string[],
+): Promise<Map<string, AgentListingVerificationStep[]>> {
+  if (listingIds.length === 0) return new Map<string, AgentListingVerificationStep[]>();
+
+  const { data: caseData, error: caseError } = await client
+    .from(LISTING_VERIFICATION_CASES_TABLE)
+    .select("id, listing_id, status")
+    .in("listing_id", listingIds);
+
+  if (caseError) {
+    if (isTableMissingError(caseError) || isColumnMissingError(caseError)) {
+      return new Map<string, AgentListingVerificationStep[]>();
+    }
+    throw caseError;
+  }
+
+  const cases = Array.isArray(caseData) ? (caseData as ListingVerificationCaseRow[]) : [];
+  if (cases.length === 0) {
+    return new Map<string, AgentListingVerificationStep[]>();
+  }
+
+  const caseIdToListingId = new Map<string, string>();
+  for (const row of cases) {
+    const caseId = String(row.id ?? "").trim();
+    const listingId = String(row.listing_id ?? "").trim();
+    if (!caseId || !listingId) continue;
+    caseIdToListingId.set(caseId, listingId);
+  }
+
+  const caseIds = Array.from(caseIdToListingId.keys());
+  if (caseIds.length === 0) {
+    return new Map<string, AgentListingVerificationStep[]>();
+  }
+
+  const { data: stepData, error: stepError } = await client
+    .from(LISTING_VERIFICATION_STEPS_TABLE)
+    .select("case_id, step_key, status, checked_at, created_at")
+    .in("case_id", caseIds);
+
+  if (stepError) {
+    if (isTableMissingError(stepError) || isColumnMissingError(stepError)) {
+      return new Map<string, AgentListingVerificationStep[]>();
+    }
+    throw stepError;
+  }
+
+  const byListingId = new Map<string, AgentListingVerificationStep[]>();
+  const steps = Array.isArray(stepData) ? (stepData as ListingVerificationStepRow[]) : [];
+  for (const row of steps) {
+    const caseId = String(row.case_id ?? "").trim();
+    const listingId = caseIdToListingId.get(caseId);
+    if (!listingId) continue;
+
+    const mappedStep = mapVerificationStepRow(row);
+    if (!mappedStep) continue;
+
+    if (!byListingId.has(listingId)) {
+      byListingId.set(listingId, []);
+    }
+    byListingId.get(listingId)?.push(mappedStep);
+  }
+
+  for (const listingId of Array.from(caseIdToListingId.values())) {
+    const stepsForListing = byListingId.get(listingId);
+    if (stepsForListing && stepsForListing.length > 0) {
+      byListingId.set(listingId, sortVerificationSteps(stepsForListing));
+    }
+  }
+
+  return byListingId;
+}
+
 function mapDbListingToRecord(
   row: Record<string, unknown>,
   commission?: ListingCommissionRow,
+  verificationSteps?: AgentListingVerificationStep[],
 ): AgentListingRecord {
   const listingType = toUiListingType(String(row.listing_type ?? "sale"));
   const status = toUiStatus(String(row.status ?? "draft"));
@@ -482,6 +700,10 @@ function mapDbListingToRecord(
     mapped.agentCommission = fallback.agentCommission;
     mapped.companyCommission = fallback.companyCommission;
     mapped.agentPayoutStatus = "Pending";
+  }
+
+  if (Array.isArray(verificationSteps) && verificationSteps.length > 0) {
+    mapped.verificationSteps = verificationSteps.map((step) => ({ ...step }));
   }
 
   return mapped;
@@ -658,7 +880,8 @@ async function fetchSingleListingRecord(
   if (!listing) return null;
 
   const commissions = await fetchListingCommissions(client, [listingId]);
-  return mapDbListingToRecord(listing, commissions.get(listingId));
+  const verificationSteps = await fetchListingVerificationSteps(client, [listingId]);
+  return mapDbListingToRecord(listing, commissions.get(listingId), verificationSteps.get(listingId));
 }
 
 export async function listAgentListings(
@@ -704,8 +927,16 @@ export async function listAgentListings(
       .map((row) => String(row.id ?? ""))
       .filter(Boolean);
     const commissions = await fetchListingCommissions(client, listingIds);
+    const verificationStepsByListingId = await fetchListingVerificationSteps(client, listingIds);
 
-    return rows.map((row) => mapDbListingToRecord(row as Record<string, unknown>, commissions.get(String(row.id))));
+    return rows.map((row) => {
+      const listingId = String(row.id ?? "");
+      return mapDbListingToRecord(
+        row as Record<string, unknown>,
+        commissions.get(listingId),
+        verificationStepsByListingId.get(listingId),
+      );
+    });
   } catch (error) {
     if (
       typeof error === "object" &&
@@ -825,6 +1056,182 @@ export async function updateAgentListingStatus(
       return updated;
     }
     throw new Error(`Failed to update listing status: ${message}`);
+  }
+}
+
+export async function updateListingVerificationStepStatus(
+  listingId: string,
+  stepKey: string,
+  nextStatus: AgentListingVerificationStepStatus,
+  actor: ListingActionActor,
+): Promise<AgentListingRecord> {
+  const normalizedStepKey = normalizeVerificationStepKey(stepKey);
+  if (!VERIFICATION_STEP_KEYS.has(normalizedStepKey)) {
+    throw new Error("Invalid verification step key.");
+  }
+  if (!isSupportedVerificationStepStatus(nextStatus)) {
+    throw new Error("Invalid verification step status.");
+  }
+
+  const actorId = normalizeUserId(actor.actorId, actor.actorName || actor.actorId);
+  const normalizedStatus = toVerificationStepStatus(nextStatus);
+  const nowIso = new Date().toISOString();
+  const client = getClient();
+
+  if (!client) {
+    const fallback = getFallbackListingById(listingId);
+    if (!fallback) throw new Error("Listing was not found.");
+    const role = normalizeRole(actor.actorRole);
+    if (role !== "admin") {
+      throwForbidden("Only admins can update verification checks.");
+    }
+
+    const currentSteps =
+      Array.isArray(fallback.verificationSteps) && fallback.verificationSteps.length > 0
+        ? fallback.verificationSteps
+        : [];
+    if (currentSteps.length === 0) {
+      throw new Error("Verification checks are not initialized for this listing.");
+    }
+    const updatedSteps = currentSteps.map((step) =>
+      step.key === normalizedStepKey ? { ...step, status: normalizedStatus, checkedAt: nowIso } : step,
+    );
+    const updated: AgentListingRecord = { ...fallback, verificationSteps: updatedSteps };
+    setFallbackListing({ ...(updated as FallbackListingRecord), agentId: fallback.agentId });
+    return updated;
+  }
+
+  try {
+    if (actor.actorName || actor.actorRole) {
+      await ensureUserExists(client, actorId, actor.actorName || "Agent User", actor.actorRole);
+    }
+
+    const roleFromDb = await getUserRole(client, actorId);
+    const effectiveRole = roleFromDb ?? actor.actorRole ?? undefined;
+    if (!isAdminRole(effectiveRole)) {
+      throwForbidden("Only admins can update verification checks.");
+    }
+
+    const listing = await getDbListingById(client, listingId);
+    if (!listing) {
+      throw new Error("Listing was not found.");
+    }
+
+    let caseId = "";
+    const { data: existingCase, error: caseFetchError } = await client
+      .from(LISTING_VERIFICATION_CASES_TABLE)
+      .select("id")
+      .eq("listing_id", listingId)
+      .maybeSingle<{ id: string }>();
+
+    if (caseFetchError) {
+      if (isTableMissingError(caseFetchError) || isColumnMissingError(caseFetchError)) {
+        throw new Error("Listing verification tables are not configured.");
+      }
+      throw caseFetchError;
+    }
+
+    if (existingCase?.id) {
+      caseId = String(existingCase.id).trim();
+    } else {
+      const { data: createdCase, error: caseCreateError } = await client
+        .from(LISTING_VERIFICATION_CASES_TABLE)
+        .insert({
+          listing_id: listingId,
+          status: "in_progress",
+          submitted_at: nowIso,
+          reviewer_id: actorId,
+          created_at: nowIso,
+          updated_at: nowIso,
+        })
+        .select("id")
+        .single<{ id: string }>();
+
+      if (caseCreateError) {
+        if (isTableMissingError(caseCreateError) || isColumnMissingError(caseCreateError)) {
+          throw new Error("Listing verification tables are not configured.");
+        }
+        if (!isDuplicateError(caseCreateError)) {
+          throw caseCreateError;
+        }
+      }
+
+      caseId = String(createdCase?.id ?? "").trim();
+      if (!caseId) {
+        const { data: refetchedCase, error: refetchError } = await client
+          .from(LISTING_VERIFICATION_CASES_TABLE)
+          .select("id")
+          .eq("listing_id", listingId)
+          .single<{ id: string }>();
+        if (refetchError) throw refetchError;
+        caseId = String(refetchedCase?.id ?? "").trim();
+      }
+    }
+
+    if (!caseId) {
+      throw new Error("Unable to resolve verification case for this listing.");
+    }
+
+    const { error: upsertStepError } = await client
+      .from(LISTING_VERIFICATION_STEPS_TABLE)
+      .upsert(
+        {
+          case_id: caseId,
+          step_key: normalizedStepKey,
+          status: normalizedStatus,
+          checked_by: actorId,
+          checked_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: "case_id,step_key" },
+      );
+    if (upsertStepError) {
+      if (isTableMissingError(upsertStepError) || isColumnMissingError(upsertStepError)) {
+        throw new Error("Listing verification tables are not configured.");
+      }
+      throw upsertStepError;
+    }
+
+    const { data: caseSteps, error: caseStepsError } = await client
+      .from(LISTING_VERIFICATION_STEPS_TABLE)
+      .select("status")
+      .eq("case_id", caseId);
+    if (caseStepsError) throw caseStepsError;
+
+    const statuses = Array.isArray(caseSteps)
+      ? caseSteps.map((row) => String((row as { status?: string }).status ?? "").trim().toLowerCase())
+      : [];
+    let caseStatus: "pending_review" | "in_progress" | "approved" | "rejected" = "pending_review";
+    if (statuses.length > 0 && statuses.every((status) => status === "completed")) {
+      caseStatus = "approved";
+    } else if (statuses.some((status) => status === "blocked")) {
+      caseStatus = "rejected";
+    } else if (statuses.some((status) => status === "in_progress" || status === "completed")) {
+      caseStatus = "in_progress";
+    }
+
+    const { error: caseUpdateError } = await client
+      .from(LISTING_VERIFICATION_CASES_TABLE)
+      .update({
+        status: caseStatus,
+        reviewer_id: actorId,
+        completed_at: caseStatus === "approved" || caseStatus === "rejected" ? nowIso : null,
+        updated_at: nowIso,
+      })
+      .eq("id", caseId);
+    if (caseUpdateError) throw caseUpdateError;
+
+    const mapped = await fetchSingleListingRecord(client, listingId);
+    if (!mapped) {
+      throw new Error("Verification step was updated but listing reload failed.");
+    }
+    return mapped;
+  } catch (error) {
+    const message = toErrorMessage(error);
+    if (message.startsWith(FORBIDDEN_PREFIX)) {
+      throw error;
+    }
+    throw new Error(`Failed to update verification step: ${message}`);
   }
 }
 
