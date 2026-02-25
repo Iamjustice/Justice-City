@@ -12,6 +12,7 @@ import {
   Archive,
   Trash2,
   ShieldCheck,
+  FileText,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,6 +46,15 @@ import {
   updateAgentProfile,
   type AgentDashboardProfile,
 } from "@/lib/agent-profiles";
+import {
+  createUtilityBill,
+  deleteUtilityBill,
+  fetchUtilityBills,
+  updateUtilityBill,
+  type UtilityBill,
+  type UtilityBillStatus,
+  type UtilityBillType,
+} from "@/lib/utility-bills";
 import {
   deleteAgentListing as deleteAgentListingApi,
   fetchAgentListings,
@@ -103,6 +113,19 @@ function listingBadgeClass(status: string): string {
   if (status === "Rented") return "bg-indigo-100 text-indigo-700 border-indigo-200";
   if (status === "Archived") return "bg-slate-200 text-slate-700 border-slate-300";
   return "bg-slate-100 text-slate-600 border-slate-200";
+}
+
+function utilityBillBadgeClass(status: UtilityBillStatus): string {
+  if (status === "Paid") return "bg-green-100 text-green-700 border-green-200";
+  if (status === "Overdue") return "bg-red-100 text-red-700 border-red-200";
+  return "bg-amber-100 text-amber-700 border-amber-200";
+}
+
+function deriveUtilityBillStatus(bill: UtilityBill): UtilityBillStatus {
+  if (bill.status !== "Pending") return bill.status;
+  const dueAt = bill.dueDate ? new Date(bill.dueDate).getTime() : Number.NaN;
+  if (Number.isFinite(dueAt) && dueAt < Date.now()) return "Overdue";
+  return "Pending";
 }
 
 function ensureVerificationSteps(listing: any): VerificationStep[] {
@@ -174,6 +197,8 @@ export default function ModernAgentDashboardView({
   const role = String(user?.role ?? "").toLowerCase();
   const isAdmin = role === "admin";
   const canEditVerificationProgress = isAdmin;
+  const canViewBills = role === "owner" || role === "admin";
+  const canManageBills = role === "owner" || role === "admin";
   const dashboardTitle =
     role === "admin"
       ? "Admin Listings Console"
@@ -243,6 +268,22 @@ export default function ModernAgentDashboardView({
   const [agentProfileForm, setAgentProfileForm] = useState({
     displayName: "",
     bio: "",
+  });
+  const [utilityBills, setUtilityBills] = useState<UtilityBill[]>([]);
+  const [isLoadingUtilityBills, setIsLoadingUtilityBills] = useState(false);
+  const [utilityBillsError, setUtilityBillsError] = useState<string | null>(null);
+  const [utilityBillActionId, setUtilityBillActionId] = useState<string | null>(null);
+  const [isCreatingUtilityBill, setIsCreatingUtilityBill] = useState(false);
+  const [utilityBillForm, setUtilityBillForm] = useState<{
+    billType: UtilityBillType;
+    amount: string;
+    dueDate: string;
+    notes: string;
+  }>({
+    billType: "Electricity",
+    amount: "",
+    dueDate: "",
+    notes: "",
   });
 
   useEffect(() => {
@@ -349,6 +390,38 @@ export default function ModernAgentDashboardView({
   }, [agentProfile, user?.name]);
 
   useEffect(() => {
+    let mounted = true;
+    if (!canViewBills || !viewerId) {
+      setUtilityBills([]);
+      setUtilityBillsError(null);
+      setIsLoadingUtilityBills(false);
+      return undefined;
+    }
+
+    setIsLoadingUtilityBills(true);
+    setUtilityBillsError(null);
+    void fetchUtilityBills()
+      .then((rows) => {
+        if (!mounted) return;
+        setUtilityBills(Array.isArray(rows) ? rows : []);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : "Failed to load utility bills.";
+        setUtilityBillsError(message);
+        setUtilityBills([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setIsLoadingUtilityBills(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [canViewBills, viewerId]);
+
+  useEffect(() => {
     if (selectedListing) {
       const next = listings.find((item: any) => item.id === selectedListing.id);
       setSelectedListing(next ?? null);
@@ -417,6 +490,116 @@ export default function ModernAgentDashboardView({
       setIsSavingAgentProfile(false);
     }
   };
+
+  const refreshUtilityBills = async () => {
+    if (!canViewBills || !viewerId) return;
+    setIsLoadingUtilityBills(true);
+    setUtilityBillsError(null);
+    try {
+      const rows = await fetchUtilityBills();
+      setUtilityBills(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load utility bills.";
+      setUtilityBillsError(message);
+    } finally {
+      setIsLoadingUtilityBills(false);
+    }
+  };
+
+  const createNewUtilityBill = async () => {
+    const amount = Number(utilityBillForm.amount.replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(amount) || amount < 0) {
+      toast({
+        title: "Invalid amount",
+        description: "Enter a valid bill amount before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCreatingUtilityBill(true);
+    try {
+      const created = await createUtilityBill({
+        billType: utilityBillForm.billType,
+        amount,
+        dueDate: utilityBillForm.dueDate || undefined,
+        notes: utilityBillForm.notes || undefined,
+      });
+      setUtilityBills((current) => [created, ...current]);
+      setUtilityBillForm({
+        billType: "Electricity",
+        amount: "",
+        dueDate: "",
+        notes: "",
+      });
+      toast({
+        title: "Utility bill created",
+        description: "The bill is now visible on your dashboard.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create utility bill.";
+      toast({
+        title: "Create failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreatingUtilityBill(false);
+    }
+  };
+
+  const setUtilityBillStatus = async (bill: UtilityBill, status: UtilityBillStatus) => {
+    setUtilityBillActionId(bill.id);
+    try {
+      const updated = await updateUtilityBill(bill.id, { status });
+      setUtilityBills((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      toast({
+        title: "Bill updated",
+        description: `Status changed to ${status}.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update bill status.";
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setUtilityBillActionId(null);
+    }
+  };
+
+  const removeUtilityBill = async (bill: UtilityBill) => {
+    setUtilityBillActionId(bill.id);
+    try {
+      await deleteUtilityBill(bill.id);
+      setUtilityBills((current) => current.filter((item) => item.id !== bill.id));
+      toast({
+        title: "Bill deleted",
+        description: "Utility bill removed.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete utility bill.";
+      toast({
+        title: "Delete failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setUtilityBillActionId(null);
+    }
+  };
+
+  const utilityBillsForView = useMemo(
+    () =>
+      utilityBills.map((bill) => ({
+        ...bill,
+        status: deriveUtilityBillStatus(bill),
+      })),
+    [utilityBills],
+  );
 
   const closedDeals = useMemo(
     () => listings.filter((listing: any) => isClosedDealStatus(String(listing.status ?? ""))),
@@ -1417,6 +1600,11 @@ export default function ModernAgentDashboardView({
           <TabsTrigger value="chats" className="gap-2">
             <MessageSquare className="w-4 h-4" /> Chats
           </TabsTrigger>
+          {canViewBills && (
+            <TabsTrigger value="bills" className="gap-2">
+              <FileText className="w-4 h-4" /> Bills
+            </TabsTrigger>
+          )}
           <TabsTrigger value="verifications" className="gap-2">
             <Clock className="w-4 h-4" /> Pending Verifications
           </TabsTrigger>
@@ -1750,6 +1938,153 @@ export default function ModernAgentDashboardView({
               )}
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="bills">
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Utility Bills</CardTitle>
+                <CardDescription>
+                  Track payment status for owner/renter utility obligations.
+                </CardDescription>
+              </div>
+              <Button variant="outline" onClick={() => void refreshUtilityBills()}>
+                Refresh
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {canManageBills && (
+                <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4">
+                  <select
+                    title="Bill type"
+                    aria-label="Bill type"
+                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                    value={utilityBillForm.billType}
+                    onChange={(event) =>
+                      setUtilityBillForm((current) => ({
+                        ...current,
+                        billType: event.target.value as UtilityBillType,
+                      }))
+                    }
+                  >
+                    <option value="Electricity">Electricity</option>
+                    <option value="Water">Water</option>
+                    <option value="Waste Management">Waste Management</option>
+                    <option value="Maintenance">Maintenance</option>
+                    <option value="Other">Other</option>
+                  </select>
+                  <Input
+                    placeholder="Amount (NGN)"
+                    value={utilityBillForm.amount}
+                    onChange={(event) =>
+                      setUtilityBillForm((current) => ({ ...current, amount: event.target.value }))
+                    }
+                  />
+                  <Input
+                    type="date"
+                    value={utilityBillForm.dueDate}
+                    onChange={(event) =>
+                      setUtilityBillForm((current) => ({ ...current, dueDate: event.target.value }))
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      className="flex-1"
+                      placeholder="Notes"
+                      value={utilityBillForm.notes}
+                      onChange={(event) =>
+                        setUtilityBillForm((current) => ({ ...current, notes: event.target.value }))
+                      }
+                    />
+                    <Button disabled={isCreatingUtilityBill} onClick={() => void createNewUtilityBill()}>
+                      {isCreatingUtilityBill ? "Saving..." : "Add"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {utilityBillsError && <p className="text-sm text-amber-600">{utilityBillsError}</p>}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Due Date</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoadingUtilityBills && utilityBillsForView.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        Loading utility bills...
+                      </TableCell>
+                    </TableRow>
+                  ) : utilityBillsForView.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        No utility bills found.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    utilityBillsForView.map((bill) => {
+                      const isActionBusy = utilityBillActionId === bill.id;
+                      const dueDateLabel = bill.dueDate
+                        ? new Date(bill.dueDate).toLocaleDateString("en-US")
+                        : "Not set";
+                      return (
+                        <TableRow key={bill.id}>
+                          <TableCell>{bill.billType}</TableCell>
+                          <TableCell>{formatNaira(bill.amount)}</TableCell>
+                          <TableCell>{dueDateLabel}</TableCell>
+                          <TableCell>
+                            <Badge className={utilityBillBadgeClass(bill.status)}>{bill.status}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              {bill.status !== "Paid" && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isActionBusy}
+                                  onClick={() => void setUtilityBillStatus(bill, "Paid")}
+                                >
+                                  Mark Paid
+                                </Button>
+                              )}
+                              {canManageBills && bill.status === "Pending" && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isActionBusy}
+                                  onClick={() => void setUtilityBillStatus(bill, "Overdue")}
+                                >
+                                  Mark Overdue
+                                </Button>
+                              )}
+                              {canManageBills && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={isActionBusy}
+                                  onClick={() => void removeUtilityBill(bill)}
+                                >
+                                  Delete
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="verifications">

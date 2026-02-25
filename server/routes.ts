@@ -103,6 +103,7 @@ const LISTINGS_TABLE = process.env.SUPABASE_LISTINGS_TABLE || "listings";
 const LISTING_IMAGES_TABLE = process.env.SUPABASE_LISTING_IMAGES_TABLE || "listing_images";
 const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || "listing_documents";
 const AGENT_PROFILES_TABLE = process.env.SUPABASE_AGENT_PROFILES_TABLE || "agent_profiles";
+const UTILITY_BILLS_TABLE = process.env.SUPABASE_UTILITY_BILLS_TABLE || "utility_bills";
 const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
 const PROPERTY_DOCUMENTS_BUCKET =
   process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
@@ -639,6 +640,17 @@ type AuthenticatedActor = {
   name: string;
 };
 
+function canUseUtilityBills(role: AppUserRole): boolean {
+  return role === "admin" || role === "owner" || role === "renter";
+}
+
+function canAccessUtilityBillRow(actor: AuthenticatedActor, row: UtilityBillRow): boolean {
+  if (actor.role === "admin") return true;
+  const ownerUserId = String(row.owner_user_id ?? "").trim();
+  const renterUserId = String(row.renter_user_id ?? "").trim();
+  return ownerUserId === actor.userId || renterUserId === actor.userId;
+}
+
 type AgentProfileRow = {
   user_id: string;
   display_name?: string | null;
@@ -786,6 +798,103 @@ async function getOrCreateAgentProfile(
     reviewCount: 0,
     recentDealsCount: metrics.recentDealsCount,
     closedDealsCount: metrics.closedDealsCount,
+  };
+}
+
+type UtilityBillDbStatus = "pending" | "paid" | "overdue";
+type UtilityBillDbType =
+  | "electricity"
+  | "water"
+  | "waste_management"
+  | "maintenance"
+  | "other";
+
+type UtilityBillStatus = "Pending" | "Paid" | "Overdue";
+type UtilityBillType = "Electricity" | "Water" | "Waste Management" | "Maintenance" | "Other";
+
+type UtilityBillRow = {
+  id: string;
+  listing_id?: string | null;
+  owner_user_id?: string | null;
+  renter_user_id?: string | null;
+  bill_type?: string | null;
+  amount?: number | string | null;
+  billing_period_start?: string | null;
+  billing_period_end?: string | null;
+  due_date?: string | null;
+  status?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type UtilityBillRecord = {
+  id: string;
+  listingId?: string;
+  ownerUserId?: string;
+  renterUserId?: string;
+  billType: UtilityBillType;
+  amount: number;
+  billingPeriodStart?: string;
+  billingPeriodEnd?: string;
+  dueDate?: string;
+  status: UtilityBillStatus;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+function toUtilityBillDbStatus(rawValue: unknown): UtilityBillDbStatus {
+  const value = String(rawValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "paid") return "paid";
+  if (value === "overdue") return "overdue";
+  return "pending";
+}
+
+function fromUtilityBillDbStatus(rawValue: unknown): UtilityBillStatus {
+  const value = toUtilityBillDbStatus(rawValue);
+  if (value === "paid") return "Paid";
+  if (value === "overdue") return "Overdue";
+  return "Pending";
+}
+
+function toUtilityBillDbType(rawValue: unknown): UtilityBillDbType {
+  const value = String(rawValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "electricity") return "electricity";
+  if (value === "water") return "water";
+  if (value === "waste_management" || value === "waste management") return "waste_management";
+  if (value === "maintenance") return "maintenance";
+  return "other";
+}
+
+function fromUtilityBillDbType(rawValue: unknown): UtilityBillType {
+  const value = toUtilityBillDbType(rawValue);
+  if (value === "electricity") return "Electricity";
+  if (value === "water") return "Water";
+  if (value === "waste_management") return "Waste Management";
+  if (value === "maintenance") return "Maintenance";
+  return "Other";
+}
+
+function mapUtilityBillRow(row: UtilityBillRow): UtilityBillRecord {
+  return {
+    id: String(row.id ?? "").trim(),
+    listingId: String(row.listing_id ?? "").trim() || undefined,
+    ownerUserId: String(row.owner_user_id ?? "").trim() || undefined,
+    renterUserId: String(row.renter_user_id ?? "").trim() || undefined,
+    billType: fromUtilityBillDbType(row.bill_type),
+    amount: Math.max(0, toNumber(row.amount, 0)),
+    billingPeriodStart: String(row.billing_period_start ?? "").trim() || undefined,
+    billingPeriodEnd: String(row.billing_period_end ?? "").trim() || undefined,
+    dueDate: String(row.due_date ?? "").trim() || undefined,
+    status: fromUtilityBillDbStatus(row.status),
+    notes: String(row.notes ?? "").trim() || undefined,
+    createdAt: String(row.created_at ?? "").trim() || undefined,
+    updatedAt: String(row.updated_at ?? "").trim() || undefined,
   };
 }
 
@@ -1988,6 +2097,317 @@ export async function registerRoutes(
       if (message.startsWith("FORBIDDEN:")) {
         return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
       }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/utility-bills", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUseUtilityBills(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/renter/admin can access utility bills." });
+      }
+
+      const listingIdFilter = String(req.query?.listingId ?? "").trim();
+      const statusFilterRaw = String(req.query?.status ?? "").trim();
+      const ownerUserIdFilter = String(req.query?.ownerUserId ?? "").trim();
+      const renterUserIdFilter = String(req.query?.renterUserId ?? "").trim();
+      const statusFilter = statusFilterRaw ? toUtilityBillDbStatus(statusFilterRaw) : "";
+
+      let query = client
+        .from(UTILITY_BILLS_TABLE)
+        .select(
+          "id, listing_id, owner_user_id, renter_user_id, bill_type, amount, billing_period_start, billing_period_end, due_date, status, notes, created_at, updated_at",
+        )
+        .order("due_date", { ascending: true })
+        .order("created_at", { ascending: false });
+
+      if (authActor.role === "admin") {
+        if (listingIdFilter) query = query.eq("listing_id", listingIdFilter);
+        if (statusFilter) query = query.eq("status", statusFilter);
+        if (ownerUserIdFilter) query = query.eq("owner_user_id", ownerUserIdFilter);
+        if (renterUserIdFilter) query = query.eq("renter_user_id", renterUserIdFilter);
+      } else {
+        query = query.or(`owner_user_id.eq.${authActor.userId},renter_user_id.eq.${authActor.userId}`);
+        if (listingIdFilter) query = query.eq("listing_id", listingIdFilter);
+        if (statusFilter) query = query.eq("status", statusFilter);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "Utility bills schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+
+      const rows = (Array.isArray(data) ? data : []) as UtilityBillRow[];
+      const visibleRows =
+        authActor.role === "admin" ? rows : rows.filter((row) => canAccessUtilityBillRow(authActor, row));
+      return res.status(200).json(visibleRows.map((row) => mapUtilityBillRow(row)));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load utility bills.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/utility-bills", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUseUtilityBills(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/renter/admin can create utility bills." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const listingId = String(body.listingId ?? "").trim() || null;
+      const billType = toUtilityBillDbType(body.billType);
+      const amount = Number(body.amount);
+      const billingPeriodStart = String(body.billingPeriodStart ?? "").trim() || null;
+      const billingPeriodEnd = String(body.billingPeriodEnd ?? "").trim() || null;
+      const dueDate = String(body.dueDate ?? "").trim() || null;
+      const notes = String(body.notes ?? "").trim() || null;
+
+      if (!Number.isFinite(amount) || amount < 0) {
+        return res.status(400).json({ message: "amount must be a non-negative number." });
+      }
+
+      const ownerUserIdInput = String(body.ownerUserId ?? "").trim();
+      const renterUserIdInput = String(body.renterUserId ?? "").trim();
+      let ownerUserId: string | null = null;
+      let renterUserId: string | null = null;
+
+      if (authActor.role === "admin") {
+        ownerUserId = ownerUserIdInput || null;
+        renterUserId = renterUserIdInput || null;
+      } else if (authActor.role === "owner") {
+        ownerUserId = authActor.userId;
+        renterUserId = renterUserIdInput || null;
+      } else {
+        renterUserId = authActor.userId;
+        ownerUserId = ownerUserIdInput || null;
+      }
+
+      if (!ownerUserId && !renterUserId) {
+        return res.status(400).json({ message: "ownerUserId or renterUserId is required." });
+      }
+
+      const status =
+        authActor.role === "admin" ? toUtilityBillDbStatus(body.status) : ("pending" as UtilityBillDbStatus);
+
+      const { data, error } = await client
+        .from(UTILITY_BILLS_TABLE)
+        .insert({
+          listing_id: listingId,
+          owner_user_id: ownerUserId,
+          renter_user_id: renterUserId,
+          bill_type: billType,
+          amount,
+          billing_period_start: billingPeriodStart,
+          billing_period_end: billingPeriodEnd,
+          due_date: dueDate,
+          status,
+          notes,
+        })
+        .select(
+          "id, listing_id, owner_user_id, renter_user_id, bill_type, amount, billing_period_start, billing_period_end, due_date, status, notes, created_at, updated_at",
+        )
+        .maybeSingle<UtilityBillRow>();
+
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "Utility bills schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+      if (!data) {
+        return res.status(502).json({ message: "Failed to create utility bill." });
+      }
+
+      return res.status(201).json(mapUtilityBillRow(data));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create utility bill.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.patch("/api/utility-bills/:billId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUseUtilityBills(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/renter/admin can update utility bills." });
+      }
+
+      const billId = String(req.params.billId ?? "").trim();
+      if (!billId) {
+        return res.status(400).json({ message: "billId is required." });
+      }
+
+      const { data: existing, error: existingError } = await client
+        .from(UTILITY_BILLS_TABLE)
+        .select(
+          "id, listing_id, owner_user_id, renter_user_id, bill_type, amount, billing_period_start, billing_period_end, due_date, status, notes, created_at, updated_at",
+        )
+        .eq("id", billId)
+        .maybeSingle<UtilityBillRow>();
+
+      if (existingError) {
+        if (isMissingTableOrColumnError(existingError)) {
+          return res.status(503).json({
+            message:
+              "Utility bills schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw existingError;
+      }
+      if (!existing) {
+        return res.status(404).json({ message: "Utility bill not found." });
+      }
+      if (!canAccessUtilityBillRow(authActor, existing)) {
+        return res.status(403).json({ message: "You cannot update this utility bill." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const updates: Record<string, unknown> = {};
+
+      if (typeof body.status === "string") {
+        updates.status = toUtilityBillDbStatus(body.status);
+      }
+      if (body.amount !== undefined) {
+        const amount = Number(body.amount);
+        if (!Number.isFinite(amount) || amount < 0) {
+          return res.status(400).json({ message: "amount must be a non-negative number." });
+        }
+        updates.amount = amount;
+      }
+      if (typeof body.billType === "string") {
+        updates.bill_type = toUtilityBillDbType(body.billType);
+      }
+      if (typeof body.billingPeriodStart === "string") {
+        updates.billing_period_start = body.billingPeriodStart.trim() || null;
+      }
+      if (typeof body.billingPeriodEnd === "string") {
+        updates.billing_period_end = body.billingPeriodEnd.trim() || null;
+      }
+      if (typeof body.dueDate === "string") {
+        updates.due_date = body.dueDate.trim() || null;
+      }
+      if (typeof body.notes === "string") {
+        updates.notes = body.notes.trim() || null;
+      }
+
+      if (authActor.role === "renter") {
+        const disallowed = Object.keys(updates).filter((key) => key !== "status" && key !== "notes");
+        if (disallowed.length > 0) {
+          return res.status(403).json({
+            message: "Renters can only update bill status or notes.",
+          });
+        }
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(200).json(mapUtilityBillRow(existing));
+      }
+
+      const { data, error } = await client
+        .from(UTILITY_BILLS_TABLE)
+        .update(updates)
+        .eq("id", billId)
+        .select(
+          "id, listing_id, owner_user_id, renter_user_id, bill_type, amount, billing_period_start, billing_period_end, due_date, status, notes, created_at, updated_at",
+        )
+        .maybeSingle<UtilityBillRow>();
+
+      if (error) {
+        throw error;
+      }
+      if (!data) {
+        return res.status(502).json({ message: "Failed to update utility bill." });
+      }
+
+      return res.status(200).json(mapUtilityBillRow(data));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update utility bill.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.delete("/api/utility-bills/:billId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUseUtilityBills(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/renter/admin can delete utility bills." });
+      }
+
+      const billId = String(req.params.billId ?? "").trim();
+      if (!billId) {
+        return res.status(400).json({ message: "billId is required." });
+      }
+
+      const { data: existing, error: existingError } = await client
+        .from(UTILITY_BILLS_TABLE)
+        .select("id, owner_user_id, renter_user_id")
+        .eq("id", billId)
+        .maybeSingle<UtilityBillRow>();
+
+      if (existingError) {
+        throw existingError;
+      }
+      if (!existing) {
+        return res.status(404).json({ message: "Utility bill not found." });
+      }
+      if (!canAccessUtilityBillRow(authActor, existing)) {
+        return res.status(403).json({ message: "You cannot delete this utility bill." });
+      }
+      if (authActor.role === "renter") {
+        return res.status(403).json({ message: "Renters cannot delete utility bills." });
+      }
+
+      const { error } = await client.from(UTILITY_BILLS_TABLE).delete().eq("id", billId);
+      if (error) {
+        throw error;
+      }
+
+      return res.status(200).json({ ok: true, billId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete utility bill.";
       return res.status(502).json({ message });
     }
   });
