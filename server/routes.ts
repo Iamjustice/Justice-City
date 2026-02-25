@@ -20,8 +20,10 @@ import {
 } from "./admin-repository";
 import {
   getConversationMessages,
+  listConversationFiles,
   listAllConversationsForAdmin,
   listUserConversations,
+  recordConversationAttachmentLinks,
   sendConversationMessage,
   upsertChatConversation,
 } from "./chat-repository";
@@ -3364,6 +3366,37 @@ export async function registerRoutes(
     },
   );
 
+  app.get(
+    "/api/chat/conversations/:conversationId/files",
+    async (req: Request, res: Response) => {
+      try {
+        const conversationId = String(req.params?.conversationId ?? "").trim();
+        if (!conversationId) {
+          return res.status(400).json({ message: "conversationId is required" });
+        }
+
+        const client = createSupabaseServiceClient();
+        if (!client) {
+          return res.status(503).json({ message: "Supabase service client is not configured." });
+        }
+
+        const authActor = await resolveAuthenticatedActor(client, req);
+        if (!authActor) {
+          return res.status(401).json({ message: "Missing or invalid bearer token." });
+        }
+
+        const files = await listConversationFiles(conversationId, authActor.userId);
+        return res.status(200).json(files);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to load conversation files";
+        if (message.startsWith("FORBIDDEN:")) {
+          return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+        }
+        return res.status(502).json({ message });
+      }
+    },
+  );
+
   app.post(
     "/api/chat/conversations/:conversationId/messages",
     async (req: Request, res: Response) => {
@@ -3473,7 +3506,9 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const conversationId = String(req.params?.conversationId ?? "").trim();
-        const senderId = String((req.body as Record<string, unknown> | undefined)?.senderId ?? "").trim();
+        const senderIdInput = String(
+          (req.body as Record<string, unknown> | undefined)?.senderId ?? "",
+        ).trim();
         const scope = String((req.body as Record<string, unknown> | undefined)?.scope ?? "").trim().toLowerCase();
         const filesRaw = (req.body as Record<string, unknown> | undefined)?.files;
         const files = Array.isArray(filesRaw) ? filesRaw : [];
@@ -3482,7 +3517,7 @@ export async function registerRoutes(
           return res.status(400).json({ message: "conversationId is required" });
         }
 
-        if (!senderId) {
+        if (!senderIdInput) {
           return res.status(400).json({ message: "senderId is required" });
         }
 
@@ -3498,6 +3533,15 @@ export async function registerRoutes(
         if (!client) {
           return res.status(503).json({ message: "Supabase storage is not configured on server." });
         }
+
+        const authActor = await resolveAuthenticatedActor(client, req);
+        if (!authActor) {
+          return res.status(401).json({ message: "Missing or invalid bearer token." });
+        }
+        if (authActor.userId !== senderIdInput) {
+          return res.status(403).json({ message: "senderId does not match authenticated user." });
+        }
+        const senderId = authActor.userId;
 
         let bucketId = "chat-attachments";
         let storageRoot = `chat/${conversationId}/${senderId}`;
@@ -3663,9 +3707,18 @@ export async function registerRoutes(
           });
         }
 
+        await recordConversationAttachmentLinks({
+          conversationId,
+          senderId,
+          attachments: uploaded,
+        });
+
         return res.status(200).json({ attachments: uploaded });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to upload attachments";
+        if (message.startsWith("FORBIDDEN:")) {
+          return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+        }
         return res.status(502).json({ message });
       }
     },

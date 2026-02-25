@@ -88,6 +88,19 @@ export type ChatMessageRecord = {
   >;
 };
 
+export type ConversationFileRecord = {
+  id: string;
+  kind: "attachment" | "transcript";
+  bucketId: string;
+  storagePath: string;
+  fileName: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  createdAt: string;
+  uploadedBy?: string;
+  previewUrl?: string;
+};
+
 export type ChatConversationListItem = {
   id: string;
   subject: string | null;
@@ -385,6 +398,13 @@ function normalizeAttachment(input: unknown): ConversationAttachmentInput | null
   };
 }
 
+function buildFileNameFromStoragePath(storagePath: string, fallback: string): string {
+  const candidate = String(storagePath ?? "").trim().split("/").pop() ?? "";
+  const normalized = String(candidate).trim();
+  if (normalized) return normalized;
+  return fallback;
+}
+
 function normalizeMessageMetadata(input: unknown): MessageMetadata | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   return { ...(input as Record<string, unknown>) } as MessageMetadata;
@@ -444,6 +464,22 @@ async function buildAttachmentPreviews(
   );
 
   return signed;
+}
+
+async function buildSignedStorageUrl(
+  client: SupabaseClient,
+  bucketId: string | undefined,
+  storagePath: string | undefined,
+): Promise<string | undefined> {
+  const safeBucketId = String(bucketId ?? "").trim();
+  const safeStoragePath = String(storagePath ?? "").trim();
+  if (!safeBucketId || !safeStoragePath) return undefined;
+
+  const { data, error } = await client.storage
+    .from(safeBucketId)
+    .createSignedUrl(safeStoragePath, 60 * 60);
+  if (error || !data?.signedUrl) return undefined;
+  return data.signedUrl;
 }
 
 function mapFallbackMessage(message: FallbackMessage, viewerId: string): ChatMessageRecord {
@@ -1095,7 +1131,39 @@ async function saveConversationAttachmentLinks(
 
   if (rows.length === 0) return;
 
-  const { error } = await client.from(CONVERSATION_ATTACHMENTS_TABLE).insert(rows);
+  const storagePaths = rows
+    .map((row) => String(row.storage_path ?? "").trim())
+    .filter(Boolean);
+
+  if (storagePaths.length === 0) return;
+
+  const { data: existingRows, error: existingError } = await client
+    .from(CONVERSATION_ATTACHMENTS_TABLE)
+    .select("storage_path")
+    .eq("conversation_id", input.conversationId)
+    .in("storage_path", storagePaths);
+
+  if (existingError) {
+    if (isTableMissingError(existingError) || isColumnMissingError(existingError)) {
+      throwServiceSchemaMissing(CONVERSATION_ATTACHMENTS_TABLE);
+    }
+    throw existingError;
+  }
+
+  const existingStoragePaths = new Set(
+    (Array.isArray(existingRows) ? existingRows : [])
+      .map((row) => String((row as Record<string, unknown>)?.storage_path ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const rowsToInsert = rows.filter((row) => {
+    const storagePath = String(row.storage_path ?? "").trim();
+    return storagePath && !existingStoragePaths.has(storagePath);
+  });
+
+  if (rowsToInsert.length === 0) return;
+
+  const { error } = await client.from(CONVERSATION_ATTACHMENTS_TABLE).insert(rowsToInsert);
   if (!error) {
     return;
   }
@@ -1105,6 +1173,28 @@ async function saveConversationAttachmentLinks(
   }
 
   throw error;
+}
+
+export async function recordConversationAttachmentLinks(input: {
+  conversationId: string;
+  senderId: string;
+  attachments?: ConversationAttachmentInput[];
+}): Promise<void> {
+  const conversationId = String(input.conversationId ?? "").trim();
+  const senderId = normalizeUserId(input.senderId, input.senderId);
+  const attachments = Array.isArray(input.attachments) ? input.attachments : [];
+
+  if (!conversationId || !senderId || attachments.length === 0) return;
+
+  const client = getClient();
+  if (!client) return;
+
+  await ensureConversationAccess(client, conversationId, senderId);
+  await saveConversationAttachmentLinks(client, {
+    conversationId,
+    senderId,
+    attachments,
+  });
 }
 
 function ensureNonAdminOneToOneInput(
@@ -1801,6 +1891,126 @@ export async function sendConversationMessage(
       throw new Error(message);
     }
     throw new Error(`Failed to send chat message: ${message}`);
+  }
+}
+
+export async function listConversationFiles(
+  conversationIdRaw: string,
+  viewerIdRaw: string,
+): Promise<ConversationFileRecord[]> {
+  const conversationId = String(conversationIdRaw ?? "").trim();
+  const viewerId = normalizeUserId(viewerIdRaw, viewerIdRaw);
+  if (!conversationId || !viewerId) return [];
+
+  const client = getClient();
+  if (!client) {
+    getFallbackConversationAccess(conversationId, viewerId);
+    return [];
+  }
+
+  try {
+    await ensureConversationAccess(client, conversationId, viewerId);
+
+    const { data: attachmentRowsRaw, error: attachmentError } = await client
+      .from(CONVERSATION_ATTACHMENTS_TABLE)
+      .select("id, uploaded_by, bucket_id, storage_path, file_name, mime_type, file_size_bytes, created_at")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(250);
+
+    if (attachmentError && !isTableMissingError(attachmentError) && !isColumnMissingError(attachmentError)) {
+      throw attachmentError;
+    }
+
+    const { data: transcriptRowRaw, error: transcriptError } = await client
+      .from(CONVERSATION_TRANSCRIPTS_TABLE)
+      .select("conversation_id, transcript_format, bucket_id, storage_path, generated_at")
+      .eq("conversation_id", conversationId)
+      .maybeSingle();
+
+    if (transcriptError && !isTableMissingError(transcriptError) && !isColumnMissingError(transcriptError)) {
+      throw transcriptError;
+    }
+
+    const attachmentRows = (Array.isArray(attachmentRowsRaw) ? attachmentRowsRaw : []) as Array<
+      Record<string, unknown>
+    >;
+
+    const records: ConversationFileRecord[] = attachmentRows.map((row) => {
+      const storagePath = String(row.storage_path ?? "").trim();
+      const bucketId = String(row.bucket_id ?? "").trim() || "chat-attachments";
+      return {
+        id: String(row.id ?? randomUUID()),
+        kind: "attachment",
+        bucketId,
+        storagePath,
+        fileName: buildFileNameFromStoragePath(
+          storagePath,
+          String(row.file_name ?? "Attachment").trim() || "Attachment",
+        ),
+        mimeType: String(row.mime_type ?? "").trim() || undefined,
+        fileSizeBytes:
+          typeof row.file_size_bytes === "number" && Number.isFinite(row.file_size_bytes)
+            ? Math.max(0, Math.trunc(row.file_size_bytes))
+            : undefined,
+        createdAt: String(row.created_at ?? "").trim() || new Date().toISOString(),
+        uploadedBy: String(row.uploaded_by ?? "").trim() || undefined,
+      } satisfies ConversationFileRecord;
+    });
+
+    if (transcriptRowRaw && typeof transcriptRowRaw === "object") {
+      const transcriptRow = transcriptRowRaw as Record<string, unknown>;
+      const transcriptStoragePath = String(transcriptRow.storage_path ?? "").trim();
+      const transcriptBucketId = String(transcriptRow.bucket_id ?? "").trim() || "conversation-transcripts";
+      if (transcriptStoragePath) {
+        records.push({
+          id: `transcript:${conversationId}`,
+          kind: "transcript",
+          bucketId: transcriptBucketId,
+          storagePath: transcriptStoragePath,
+          fileName: buildFileNameFromStoragePath(transcriptStoragePath, "service_transcript.pdf"),
+          mimeType: "application/pdf",
+          createdAt: String(transcriptRow.generated_at ?? "").trim() || new Date().toISOString(),
+        });
+      }
+    }
+
+    const dedupe = new Set<string>();
+    const uniqueRecords = records.filter((record) => {
+      const key = `${record.kind}:${record.bucketId}:${record.storagePath}`;
+      if (dedupe.has(key)) return false;
+      dedupe.add(key);
+      return true;
+    });
+
+    const withSignedUrls = await Promise.all(
+      uniqueRecords.map(async (record) => ({
+        ...record,
+        previewUrl: await buildSignedStorageUrl(client, record.bucketId, record.storagePath),
+      })),
+    );
+
+    return withSignedUrls.sort((a, b) => {
+      const aTime = new Date(a.createdAt).getTime();
+      const bTime = new Date(b.createdAt).getTime();
+      return bTime - aTime;
+    });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      isTableMissingError(error as { message?: string })
+    ) {
+      getFallbackConversationAccess(conversationId, viewerId);
+      return [];
+    }
+
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message.startsWith(FORBIDDEN_PREFIX)) {
+      throw new Error(message);
+    }
+    throw new Error(`Failed to load conversation files: ${message}`);
   }
 }
 
