@@ -13,11 +13,18 @@ import { useAuth } from "@/lib/auth";
 import { queryClient } from "@/lib/queryClient";
 import {
   addAdminFlaggedListingComment,
+  fetchAdminOpenDisputes,
+  fetchAdminServicePdfJobs,
   fetchAdminDashboardData,
+  processNextAdminServicePdfJob,
+  resolveAdminOpenDispute,
   updateAdminFlaggedListingStatus,
   updateAdminVerificationStatus,
+  type AdminDisputeResolutionStatus,
   type AdminDashboardData,
   type AdminFlaggedListingStatus,
+  type AdminOpenDispute,
+  type AdminServicePdfJob,
   type AdminVerificationStatus,
 } from "@/lib/admin";
 import {
@@ -126,6 +133,17 @@ type AdminDashboardViewProps = {
 export default function AdminDashboardView({ listingsConsole }: AdminDashboardViewProps) {
   const { user } = useAuth();
   const { toast } = useToast();
+  const permissionSet = useMemo(
+    () => new Set(Array.isArray(user?.permissions) ? user.permissions : []),
+    [user?.permissions],
+  );
+  const canReadAdminDashboard = permissionSet.has("users.read");
+  const canReviewVerifications = permissionSet.has("verifications.review");
+  const canManageFlagged = permissionSet.has("flagged.manage");
+  const canCommentFlagged = permissionSet.has("flagged.comment");
+  const canManageHiring = permissionSet.has("users.manage");
+  const canModerateChats = permissionSet.has("chat.moderate");
+  const canManageServicePricing = permissionSet.has("billing.manage");
 
   const [selectedInquiryId, setSelectedInquiryId] = useState<string | null>(null);
   const [selectedVerificationId, setSelectedVerificationId] = useState<string | null>(null);
@@ -188,10 +206,13 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
   const [moderationConversationsError, setModerationConversationsError] = useState<string | null>(
     null,
   );
+  const [activeDisputeId, setActiveDisputeId] = useState<string | null>(null);
+  const [lastProcessedPdfJobId, setLastProcessedPdfJobId] = useState<string | null>(null);
 
   const { data, isLoading, isFetching } = useQuery<AdminDashboardData>({
     queryKey: ["/api/admin/dashboard"],
     queryFn: fetchAdminDashboardData,
+    enabled: canReadAdminDashboard,
   });
   const {
     data: serviceOfferings = [],
@@ -207,10 +228,26 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
     isFetching: isFetchingHiringApplications,
   } = useQuery<HiringApplication[]>({
     queryKey: ["/api/admin/hiring-applications", user?.role ?? ""],
-    queryFn: () =>
-      fetchAdminHiringApplications({
-        actorRole: user?.role ?? undefined,
-      }),
+    queryFn: () => fetchAdminHiringApplications(),
+    enabled: canManageHiring,
+  });
+  const {
+    data: openDisputes = [],
+    isLoading: isLoadingOpenDisputes,
+    isFetching: isFetchingOpenDisputes,
+  } = useQuery<AdminOpenDispute[]>({
+    queryKey: ["/api/disputes/open"],
+    queryFn: () => fetchAdminOpenDisputes({ limit: 50 }),
+    enabled: canModerateChats,
+  });
+  const {
+    data: servicePdfJobs = [],
+    isLoading: isLoadingServicePdfJobs,
+    isFetching: isFetchingServicePdfJobs,
+  } = useQuery<AdminServicePdfJob[]>({
+    queryKey: ["/api/service-pdf-jobs", "admin"],
+    queryFn: () => fetchAdminServicePdfJobs({ limit: 30 }),
+    enabled: canModerateChats,
   });
   const [serviceEdits, setServiceEdits] = useState<Record<string, { price: string; turnaround: string }>>({});
 
@@ -290,12 +327,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
       code: string;
       price: string;
       turnaround: string;
-    }) =>
-      updateAdminServiceOffering(code, {
-        price,
-        turnaround,
-        actorRole: user?.role ?? undefined,
-      }),
+    }) => updateAdminServiceOffering(code, { price, turnaround }),
     onSuccess: (updated) => {
       queryClient.setQueryData<ServiceOffering[]>(["/api/service-offerings"], (current) => {
         if (!Array.isArray(current) || current.length === 0) {
@@ -331,7 +363,6 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
         status,
         reviewerId: user?.id ?? undefined,
         reviewerName: user?.name ?? undefined,
-        actorRole: user?.role ?? undefined,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["/api/admin/hiring-applications"] });
@@ -343,6 +374,67 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to update hiring application";
       toast({ title: "Update failed", description: message, variant: "destructive" });
+    },
+  });
+  const resolveOpenDisputeMutation = useMutation({
+    mutationFn: ({
+      disputeId,
+      status,
+      resolution,
+      resolutionTargetStatus,
+    }: {
+      disputeId: string;
+      status: AdminDisputeResolutionStatus;
+      resolution?: string;
+      resolutionTargetStatus?: string;
+    }) =>
+      resolveAdminOpenDispute(disputeId, {
+        status,
+        resolution,
+        resolutionTargetStatus,
+      }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/disputes/open"] });
+      if (result.warnings && result.warnings.length > 0) {
+        toast({
+          title: "Dispute updated with warnings",
+          description: result.warnings[0],
+        });
+        return;
+      }
+      toast({
+        title: "Dispute updated",
+        description: "The dispute queue has been refreshed.",
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to resolve dispute";
+      toast({ title: "Dispute update failed", description: message, variant: "destructive" });
+    },
+    onSettled: () => {
+      setActiveDisputeId(null);
+    },
+  });
+  const processNextPdfJobMutation = useMutation({
+    mutationFn: () => processNextAdminServicePdfJob(),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/service-pdf-jobs", "admin"] });
+      if (!result.job) {
+        toast({
+          title: "No queued jobs",
+          description: "There are no queued service PDF jobs to process.",
+        });
+        return;
+      }
+      setLastProcessedPdfJobId(result.job.id);
+      toast({
+        title: "PDF job processed",
+        description: `Processed job ${result.job.id.slice(0, 8)} successfully.`,
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to process queued PDF jobs";
+      toast({ title: "Job processing failed", description: message, variant: "destructive" });
     },
   });
 
@@ -362,7 +454,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
   useEffect(() => {
     let mounted = true;
     const userId = String(user?.id ?? "").trim();
-    if (!userId) return undefined;
+    if (!userId || !canModerateChats) return undefined;
 
     setIsLoadingModerationConversations(true);
     setModerationConversationsError(null);
@@ -388,7 +480,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
     return () => {
       mounted = false;
     };
-  }, [user?.id]);
+  }, [canModerateChats, user?.id, user?.name, user?.role]);
 
   const filteredUsers = useMemo(() => {
     return users.filter((item) => {
@@ -469,6 +561,23 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
     setSelectedInquiryId(id);
   };
 
+  const openModerationConversationById = (conversationId: string) => {
+    const normalizedConversationId = String(conversationId ?? "").trim();
+    if (!normalizedConversationId) return;
+
+    const exists = moderationConversations.some((item) => item.id === normalizedConversationId);
+    if (!exists) {
+      toast({
+        title: "Conversation unavailable",
+        description:
+          "This conversation is not in the current moderation snapshot. Refresh moderation conversations first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setSelectedModerationConversationId(normalizedConversationId);
+  };
+
   const saveServiceOffering = (code: string) => {
     const edit = serviceEdits[code];
     if (!edit) return;
@@ -491,8 +600,75 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
     });
   };
 
+  const resolveDispute = (dispute: AdminOpenDispute, status: AdminDisputeResolutionStatus) => {
+    if (!canModerateChats) {
+      toast({
+        title: "Permission denied",
+        description: "You do not have permission to resolve disputes.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const notePrompt =
+      status === "resolved"
+        ? "Enter a resolution note for this dispute:"
+        : status === "rejected"
+          ? "Enter a rejection reason for this dispute:"
+          : "Enter a cancellation note for this dispute:";
+    const resolution = window.prompt(notePrompt, dispute.reason)?.trim();
+    if (!resolution) {
+      toast({
+        title: "Resolution note required",
+        description: "Add a short note before updating this dispute.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let resolutionTargetStatus: string | undefined;
+    if (status === "resolved") {
+      const targetRaw = window
+        .prompt(
+          "Optional transaction status after resolution (example: in_progress, completed). Leave blank to skip.",
+          "",
+        )
+        ?.trim()
+        .toLowerCase();
+      resolutionTargetStatus = targetRaw || undefined;
+    }
+
+    setActiveDisputeId(dispute.id);
+    resolveOpenDisputeMutation.mutate({
+      disputeId: dispute.id,
+      status,
+      resolution,
+      resolutionTargetStatus,
+    });
+  };
+
+  const processNextPdfJob = () => {
+    if (!canModerateChats) {
+      toast({
+        title: "Permission denied",
+        description: "You do not have permission to process PDF jobs.",
+        variant: "destructive",
+      });
+      return;
+    }
+    processNextPdfJobMutation.mutate();
+  };
+
   const applyVerificationDecision = (status: AdminVerificationStatus) => {
     if (!selectedVerification) return;
+    if (!canReviewVerifications) {
+      toast({
+        title: "Permission denied",
+        description: "You do not have permission to review verifications.",
+        variant: "destructive",
+      });
+      return;
+    }
     updateVerificationMutation.mutate(
       { id: selectedVerification.id, status },
       {
@@ -504,11 +680,27 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
   };
 
   const applyFlaggedListingStatus = (id: string, status: AdminFlaggedListingStatus) => {
+    if (!canManageFlagged) {
+      toast({
+        title: "Permission denied",
+        description: "You do not have permission to manage flagged listings.",
+        variant: "destructive",
+      });
+      return;
+    }
     updateFlaggedListingMutation.mutate({ id, status });
   };
 
   const submitFlaggedListingComment = () => {
     if (!selectedListingForComment) return;
+    if (!canCommentFlagged) {
+      toast({
+        title: "Permission denied",
+        description: "You do not have permission to send flagged listing comments.",
+        variant: "destructive",
+      });
+      return;
+    }
     const comment = commentBody.trim();
     if (!comment) {
       toast({ title: "Comment required", description: "Enter a comment before sending." });
@@ -527,6 +719,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
   const pendingVerifications = verifications.filter((item) => item.status === "Awaiting Review").length;
   const activeFlaggedListings = flaggedListings.filter((item) => item.status !== "Cleared").length;
   const newInquiryCount = serviceInquiries.filter((item) => item.isNew).length;
+  const queuedPdfJobs = servicePdfJobs.filter((item) => item.status === "queued").length;
 
   const overview = data?.overview ?? {
     commissionRate: 5.0,
@@ -577,6 +770,14 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
       }
     );
   };
+
+  if (!canReadAdminDashboard) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+        You do not have permission to access the admin dashboard.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -702,21 +903,21 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
           <DialogFooter className="gap-2 sm:gap-0">
             <Button
               variant="outline"
-              disabled={updateVerificationMutation.isPending}
+              disabled={updateVerificationMutation.isPending || !canReviewVerifications}
               onClick={() => applyVerificationDecision("Awaiting Review")}
             >
               Mark Awaiting Review
             </Button>
             <Button
               variant="outline"
-              disabled={updateVerificationMutation.isPending}
+              disabled={updateVerificationMutation.isPending || !canReviewVerifications}
               className="border-red-200 text-red-700 hover:bg-red-50"
               onClick={() => applyVerificationDecision("Rejected")}
             >
               Reject
             </Button>
             <Button
-              disabled={updateVerificationMutation.isPending}
+              disabled={updateVerificationMutation.isPending || !canReviewVerifications}
               className="bg-green-600 text-white hover:bg-green-700"
               onClick={() => applyVerificationDecision("Approved")}
             >
@@ -819,7 +1020,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
               Close
             </Button>
             <Button
-              disabled={createCommentMutation.isPending}
+              disabled={createCommentMutation.isPending || !canCommentFlagged}
               className="bg-blue-600 hover:bg-blue-700"
               onClick={submitFlaggedListingComment}
             >
@@ -1355,7 +1556,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
                           size="sm"
                           variant="outline"
                           onClick={() => saveServiceOffering(service.code)}
-                          disabled={updateServiceOfferingMutation.isPending}
+                          disabled={updateServiceOfferingMutation.isPending || !canManageServicePricing}
                         >
                           Save
                         </Button>
@@ -1458,7 +1659,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
                         <Button
                           size="sm"
                           variant="outline"
-                          disabled={updateHiringApplicationMutation.isPending}
+                          disabled={updateHiringApplicationMutation.isPending || !canManageHiring}
                           onClick={() =>
                             updateHiringApplicationMutation.mutate({
                               id: application.id,
@@ -1472,7 +1673,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
                           size="sm"
                           variant="outline"
                           className="border-green-200 text-green-700 hover:bg-green-50"
-                          disabled={updateHiringApplicationMutation.isPending}
+                          disabled={updateHiringApplicationMutation.isPending || !canManageHiring}
                           onClick={() =>
                             updateHiringApplicationMutation.mutate({
                               id: application.id,
@@ -1486,7 +1687,7 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
                           size="sm"
                           variant="outline"
                           className="border-red-200 text-red-700 hover:bg-red-50"
-                          disabled={updateHiringApplicationMutation.isPending}
+                          disabled={updateHiringApplicationMutation.isPending || !canManageHiring}
                           onClick={() =>
                             updateHiringApplicationMutation.mutate({
                               id: application.id,
@@ -1639,6 +1840,179 @@ export default function AdminDashboardView({ listingsConsole }: AdminDashboardVi
                 })}
               </TableBody>
             </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="order-4">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Open Disputes Queue</CardTitle>
+            <CardDescription>Review and close escrow disputes raised by users.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{openDisputes.length} Open</Badge>
+            {isFetchingOpenDisputes && <Badge variant="outline">Refreshing...</Badge>}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {isLoadingOpenDisputes ? (
+            <p className="text-sm text-slate-500">Loading open disputes...</p>
+          ) : openDisputes.length === 0 ? (
+            <p className="text-sm text-slate-500">No open disputes right now.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Transaction</TableHead>
+                  <TableHead>Opened</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {openDisputes.map((dispute) => (
+                  <TableRow key={dispute.id}>
+                    <TableCell className="max-w-[300px]">
+                      <p className="font-medium text-slate-900 truncate">{dispute.reason}</p>
+                      {dispute.details && (
+                        <p className="text-xs text-slate-500 mt-1 line-clamp-2">{dispute.details}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-600">
+                      <p>{dispute.transactionId}</p>
+                      <p className="text-slate-400 mt-1">{dispute.conversationId}</p>
+                    </TableCell>
+                    <TableCell className="text-slate-500">{formatDate(dispute.createdAt)}</TableCell>
+                    <TableCell>
+                      <Badge className="bg-red-100 text-red-700 border-red-200">
+                        {dispute.status.toUpperCase()}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openModerationConversationById(dispute.conversationId)}
+                        >
+                          Open Chat
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-green-200 text-green-700 hover:bg-green-50"
+                          disabled={activeDisputeId === dispute.id || resolveOpenDisputeMutation.isPending}
+                          onClick={() => resolveDispute(dispute, "resolved")}
+                        >
+                          Resolve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-amber-200 text-amber-700 hover:bg-amber-50"
+                          disabled={activeDisputeId === dispute.id || resolveOpenDisputeMutation.isPending}
+                          onClick={() => resolveDispute(dispute, "rejected")}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-slate-200 text-slate-700 hover:bg-slate-50"
+                          disabled={activeDisputeId === dispute.id || resolveOpenDisputeMutation.isPending}
+                          onClick={() => resolveDispute(dispute, "cancelled")}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="order-7">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Service PDF Jobs</CardTitle>
+            <CardDescription>Monitor and manually process queued transcript generation jobs.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{queuedPdfJobs} Queued</Badge>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={processNextPdfJob}
+              disabled={processNextPdfJobMutation.isPending || !canModerateChats}
+            >
+              {processNextPdfJobMutation.isPending ? "Processing..." : "Process Next Job"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {isLoadingServicePdfJobs ? (
+            <p className="text-sm text-slate-500">Loading service PDF jobs...</p>
+          ) : servicePdfJobs.length === 0 ? (
+            <p className="text-sm text-slate-500">No service PDF jobs found.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Attempts</TableHead>
+                  <TableHead>Updated</TableHead>
+                  <TableHead>Error</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {servicePdfJobs.map((job) => (
+                  <TableRow
+                    key={job.id}
+                    className={lastProcessedPdfJobId === job.id ? "bg-green-50/60" : undefined}
+                  >
+                    <TableCell className="text-xs text-slate-600">
+                      <p className="font-medium text-slate-900">{job.id}</p>
+                      <p className="text-slate-400 mt-1">{job.conversationId}</p>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        className={
+                          job.status === "completed"
+                            ? "bg-green-100 text-green-700 border-green-200"
+                            : job.status === "failed"
+                              ? "bg-red-100 text-red-700 border-red-200"
+                              : job.status === "processing"
+                                ? "bg-blue-100 text-blue-700 border-blue-200"
+                                : "bg-amber-100 text-amber-700 border-amber-200"
+                        }
+                      >
+                        {job.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-slate-600">
+                      {job.attemptCount}/{job.maxAttempts}
+                    </TableCell>
+                    <TableCell className="text-slate-500">{formatDate(job.updatedAt)}</TableCell>
+                    <TableCell className="max-w-[260px]">
+                      {job.errorMessage ? (
+                        <span className="text-xs text-red-600 line-clamp-2">{job.errorMessage}</span>
+                      ) : (
+                        <span className="text-xs text-slate-400">No errors</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          {isFetchingServicePdfJobs && (
+            <p className="mt-3 text-xs text-slate-500">Refreshing service PDF jobs...</p>
           )}
         </CardContent>
       </Card>

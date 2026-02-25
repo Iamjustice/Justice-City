@@ -668,7 +668,6 @@ export function ChatInterface({
         conversationId,
         transactionId: transaction?.id,
         createdByUserId: user.id,
-        actorRole: user.role ?? undefined,
       });
       setLatestPdfJob(job);
       try {
@@ -784,8 +783,6 @@ export function ChatInterface({
       const updated = await updatePayoutLedgerStatus({
         entryId: entry.id,
         status: nextStatus,
-        actorRole: user.role ?? undefined,
-        actorUserId: user.id,
       });
       setPayoutLedgerEntries((current) =>
         current.map((item) => (item.id === updated.id ? updated : item)),

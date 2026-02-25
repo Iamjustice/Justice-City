@@ -141,15 +141,11 @@ export type ProviderPackage = {
 export async function getTransactionByConversation(
   conversationId: string,
 ): Promise<TransactionSummary | null> {
-  const response = await fetch(
+  const response = await apiRequest(
+    "GET",
     `/api/transactions/by-conversation/${encodeURIComponent(conversationId)}`,
-    { credentials: "include" },
   );
   if (response.status === 404) return null;
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
   return (await response.json()) as TransactionSummary;
 }
 
@@ -170,13 +166,7 @@ export async function upsertTransactionForConversation(payload: {
 export async function listTransactionActions(
   transactionId: string,
 ): Promise<TransactionAction[]> {
-  const response = await fetch(`/api/transactions/${encodeURIComponent(transactionId)}/actions`, {
-    credentials: "include",
-  });
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
+  const response = await apiRequest("GET", `/api/transactions/${encodeURIComponent(transactionId)}/actions`);
   return (await response.json()) as TransactionAction[];
 }
 
@@ -222,14 +212,7 @@ export async function openDispute(input: {
 }
 
 export async function listDisputes(transactionId: string): Promise<TransactionDispute[]> {
-  const response = await fetch(
-    `/api/transactions/${encodeURIComponent(transactionId)}/disputes`,
-    { credentials: "include" },
-  );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
+  const response = await apiRequest("GET", `/api/transactions/${encodeURIComponent(transactionId)}/disputes`);
   return (await response.json()) as TransactionDispute[];
 }
 
@@ -243,14 +226,10 @@ export async function listTransactionStatusHistory(
   }
 
   const query = params.toString();
-  const response = await fetch(
+  const response = await apiRequest(
+    "GET",
     `/api/transactions/${encodeURIComponent(transactionId)}/status-history${query ? `?${query}` : ""}`,
-    { credentials: "include" },
   );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
   return (await response.json()) as TransactionStatusHistoryItem[];
 }
 
@@ -264,22 +243,16 @@ export async function listPayoutLedger(
   }
 
   const query = params.toString();
-  const response = await fetch(
+  const response = await apiRequest(
+    "GET",
     `/api/transactions/${encodeURIComponent(transactionId)}/payout-ledger${query ? `?${query}` : ""}`,
-    { credentials: "include" },
   );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
   return (await response.json()) as PayoutLedgerEntry[];
 }
 
 export async function updatePayoutLedgerStatus(input: {
   entryId: string;
   status: PayoutLedgerStatus;
-  actorRole?: string;
-  actorUserId?: string;
   reason?: string;
   reference?: string;
   metadata?: Record<string, unknown>;
@@ -289,8 +262,6 @@ export async function updatePayoutLedgerStatus(input: {
     `/api/payout-ledger/${encodeURIComponent(input.entryId)}/status`,
     {
       status: input.status,
-      actorRole: input.actorRole,
-      actorUserId: input.actorUserId,
       reason: input.reason,
       reference: input.reference,
       metadata: input.metadata,
@@ -304,7 +275,6 @@ export async function queueServicePdfJob(input: {
   transactionId?: string;
   serviceRequestId?: string;
   createdByUserId?: string;
-  actorRole?: string;
 }): Promise<ServicePdfJob> {
   const response = await apiRequest("POST", "/api/service-pdf-jobs", input);
   return (await response.json()) as ServicePdfJob;
@@ -313,14 +283,10 @@ export async function queueServicePdfJob(input: {
 export async function listServicePdfJobsByConversation(
   conversationId: string,
 ): Promise<ServicePdfJob[]> {
-  const response = await fetch(
+  const response = await apiRequest(
+    "GET",
     `/api/service-pdf-jobs?conversationId=${encodeURIComponent(conversationId)}`,
-    { credentials: "include" },
   );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
   return (await response.json()) as ServicePdfJob[];
 }
 
@@ -346,22 +312,18 @@ export async function createProviderLink(input: {
 }
 
 export async function listProviderLinks(conversationId: string): Promise<ServiceProviderLink[]> {
-  const response = await fetch(
+  const response = await apiRequest(
+    "GET",
     `/api/provider-links/by-conversation/${encodeURIComponent(conversationId)}`,
-    { credentials: "include" },
   );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
   return (await response.json()) as ServiceProviderLink[];
 }
 
-export async function revokeProviderLink(linkId: string, actorRole: string): Promise<ServiceProviderLink> {
+export async function revokeProviderLink(linkId: string): Promise<ServiceProviderLink> {
   const response = await apiRequest(
     "POST",
     `/api/provider-links/${encodeURIComponent(linkId)}/revoke`,
-    { actorRole },
+    {},
   );
   return (await response.json()) as ServiceProviderLink;
 }

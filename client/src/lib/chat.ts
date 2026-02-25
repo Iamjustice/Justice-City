@@ -183,16 +183,7 @@ export async function fetchAdminConversations(
   if (options?.viewerRole) params.set("viewerRole", options.viewerRole);
   if (options?.viewerName) params.set("viewerName", options.viewerName);
 
-  const response = await fetch(
-    `/api/admin/chat/conversations?${params.toString()}`,
-    { credentials: "include" },
-  );
-
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
-
+  const response = await apiRequest("GET", `/api/admin/chat/conversations?${params.toString()}`);
   return response.json();
 }
 

@@ -112,6 +112,8 @@ const UTILITY_BILLS_TABLE = process.env.SUPABASE_UTILITY_BILLS_TABLE || "utility
 const PROPERTY_EXPENSES_TABLE = process.env.SUPABASE_PROPERTY_EXPENSES_TABLE || "property_expenses";
 const USER_DOCUMENT_RECORDS_TABLE =
   process.env.SUPABASE_USER_DOCUMENT_RECORDS_TABLE || "user_document_records";
+const ROLE_PERMISSIONS_TABLE =
+  process.env.SUPABASE_ROLE_PERMISSIONS_TABLE || "role_permissions";
 const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
 const PROPERTY_DOCUMENTS_BUCKET =
   process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
@@ -406,6 +408,7 @@ async function buildAuthProfileFromToken(
   nickname?: string;
   email: string;
   role: AppUserRole;
+  permissions: string[];
   isVerified: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
@@ -623,6 +626,7 @@ async function buildAuthProfileFromToken(
   }
 
   const phone = String(userRow?.phone ?? "").trim() || undefined;
+  const permissions = Array.from(await resolvePermissionsForRole(client, role)).sort();
 
   return {
     id: String(authUser.id),
@@ -630,6 +634,7 @@ async function buildAuthProfileFromToken(
     nickname,
     email,
     role,
+    permissions,
     isVerified: derivedVerified,
     emailVerified: Boolean(userRow?.email_verified) || emailConfirmedFromAuth,
     phoneVerified: Boolean(userRow?.phone_verified),
@@ -646,7 +651,83 @@ type AuthenticatedActor = {
   userId: string;
   role: AppUserRole;
   name: string;
+  permissions: Set<string>;
 };
+
+type PermissionCode =
+  | "users.read"
+  | "users.manage"
+  | "verifications.read"
+  | "verifications.review"
+  | "flagged.read"
+  | "flagged.manage"
+  | "flagged.comment"
+  | "chat.use"
+  | "chat.moderate"
+  | "commissions.read"
+  | "commissions.manage"
+  | "documents.read"
+  | "billing.read"
+  | "billing.manage"
+  | "revenue.read";
+
+const DEFAULT_ROLE_PERMISSIONS: Record<AppUserRole, PermissionCode[]> = {
+  admin: [
+    "users.read",
+    "users.manage",
+    "verifications.read",
+    "verifications.review",
+    "flagged.read",
+    "flagged.manage",
+    "flagged.comment",
+    "chat.use",
+    "chat.moderate",
+    "commissions.read",
+    "commissions.manage",
+    "documents.read",
+    "billing.read",
+    "billing.manage",
+    "revenue.read",
+  ],
+  agent: ["chat.use", "verifications.read", "commissions.read", "documents.read"],
+  seller: ["chat.use", "verifications.read", "documents.read"],
+  buyer: ["chat.use", "verifications.read", "documents.read"],
+  owner: ["chat.use", "verifications.read", "documents.read", "billing.read", "billing.manage"],
+  renter: ["chat.use", "verifications.read", "documents.read", "billing.read"],
+};
+
+function getFallbackPermissionsForRole(role: AppUserRole): Set<string> {
+  return new Set(DEFAULT_ROLE_PERMISSIONS[role] ?? []);
+}
+
+async function resolvePermissionsForRole(
+  client: SupabaseClient,
+  role: AppUserRole,
+): Promise<Set<string>> {
+  const fallback = getFallbackPermissionsForRole(role);
+  const { data, error } = await client
+    .from(ROLE_PERMISSIONS_TABLE)
+    .select("permission_code")
+    .eq("role", role);
+
+  if (error) {
+    if (isMissingTableOrColumnError(error)) return fallback;
+    throw error;
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  const resolved = new Set(
+    rows
+      .map((row) => String((row as { permission_code?: unknown }).permission_code ?? "").trim())
+      .filter(Boolean),
+  );
+  return resolved.size > 0 ? resolved : fallback;
+}
+
+function actorHasPermission(actor: AuthenticatedActor, permission: PermissionCode): boolean {
+  if (actor.role === "admin") return true;
+  return actor.permissions.has(permission);
+}
 
 function canUseUtilityBills(role: AppUserRole): boolean {
   return role === "admin" || role === "owner" || role === "renter";
@@ -1141,8 +1222,29 @@ async function resolveAuthenticatedActor(
   const name =
     String(userRow?.full_name ?? metadata.full_name ?? metadata.name ?? authUser.email ?? "").trim() ||
     "User";
+  const permissions = await resolvePermissionsForRole(client, role);
 
-  return { userId, role, name };
+  return { userId, role, name, permissions };
+}
+
+async function requireAuthenticatedActor(
+  client: SupabaseClient,
+  req: Request,
+  res: Response,
+): Promise<AuthenticatedActor | null> {
+  const actor = await resolveAuthenticatedActor(client, req);
+  if (!actor) {
+    res.status(401).json({ message: "Missing or invalid bearer token." });
+    return null;
+  }
+  return actor;
+}
+
+function ensureActorPermission(
+  actor: AuthenticatedActor,
+  permission: PermissionCode,
+): boolean {
+  return actorHasPermission(actor, permission);
 }
 
 function getRequestRawBody(req: Request): Buffer {
@@ -3041,8 +3143,18 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/admin/dashboard", async (_req: Request, res: Response) => {
+  app.get("/api/admin/dashboard", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "users.read")) {
+        return res.status(403).json({ message: "You do not have permission to view admin dashboard data." });
+      }
+
       const data = await getAdminDashboardData();
       return res.status(200).json(data);
     } catch (error) {
@@ -3117,12 +3229,14 @@ export async function registerRoutes(
 
   app.get("/api/admin/hiring-applications", async (req: Request, res: Response) => {
     try {
-      const actorRole = String(req.query?.actorRole ?? "")
-        .trim()
-        .toLowerCase();
-
-      if (actorRole !== "admin") {
-        return res.status(403).json({ message: "Only admins can view hiring applications." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "users.manage")) {
+        return res.status(403).json({ message: "You do not have permission to view hiring applications." });
       }
 
       const rows = await listHiringApplications();
@@ -3136,6 +3250,16 @@ export async function registerRoutes(
 
   app.patch("/api/admin/hiring-applications/:id/status", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "users.manage")) {
+        return res.status(403).json({ message: "You do not have permission to update hiring applications." });
+      }
+
       const id = String(req.params?.id ?? "").trim();
       const status = String(req.body?.status ?? "")
         .trim()
@@ -3143,9 +3267,6 @@ export async function registerRoutes(
       const reviewerNotes = String(req.body?.reviewerNotes ?? "").trim();
       const reviewerId = String(req.body?.reviewerId ?? "").trim();
       const reviewerName = String(req.body?.reviewerName ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "")
-        .trim()
-        .toLowerCase();
 
       if (!id) {
         return res.status(400).json({ message: "application id is required" });
@@ -3155,18 +3276,12 @@ export async function registerRoutes(
         return res.status(400).json({ message: "status is required" });
       }
 
-      if (actorRole !== "admin") {
-        return res
-          .status(403)
-          .json({ message: "Only admins can update hiring application status." });
-      }
-
       const updated = await updateHiringApplicationStatus({
         id,
         status: status as "submitted" | "under_review" | "approved" | "rejected",
         reviewerNotes: reviewerNotes || undefined,
-        reviewerId: reviewerId || undefined,
-        reviewerName: reviewerName || undefined,
+        reviewerId: reviewerId || authActor.userId || undefined,
+        reviewerName: reviewerName || authActor.name || undefined,
       });
 
       return res.status(200).json(updated);
@@ -3194,12 +3309,19 @@ export async function registerRoutes(
 
   app.patch("/api/admin/service-offerings/:code", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "billing.manage")) {
+        return res.status(403).json({ message: "You do not have permission to update service pricing." });
+      }
+
       const code = String(req.params?.code ?? "").trim();
       const price = String(req.body?.price ?? "").trim();
       const turnaround = String(req.body?.turnaround ?? "").trim();
-      const actorRole = String(req.body?.actorRole ?? "")
-        .trim()
-        .toLowerCase();
 
       if (!code) {
         return res.status(400).json({ message: "service code is required" });
@@ -3211,10 +3333,6 @@ export async function registerRoutes(
 
       if (!turnaround) {
         return res.status(400).json({ message: "turnaround is required" });
-      }
-
-      if (actorRole !== "admin") {
-        return res.status(403).json({ message: "Only admins can update service pricing and delivery." });
       }
 
       const updated = await updateServiceOffering({
@@ -3319,17 +3437,27 @@ export async function registerRoutes(
 
   app.get("/api/admin/chat/conversations", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "chat.moderate")) {
+        return res.status(403).json({ message: "You do not have permission to moderate conversations." });
+      }
+
       const viewerId = String(req.query?.viewerId ?? "").trim();
       const viewerRole = String(req.query?.viewerRole ?? "").trim();
       const viewerName = String(req.query?.viewerName ?? "").trim();
-      if (!viewerId) {
-        return res.status(400).json({ message: "viewerId is required" });
-      }
+      const effectiveViewerId = viewerId || authActor.userId;
+      const effectiveViewerRole = viewerRole || authActor.role;
+      const effectiveViewerName = viewerName || authActor.name;
 
       const conversations = await listAllConversationsForAdmin(
-        viewerId,
-        viewerRole || undefined,
-        viewerName || undefined,
+        effectiveViewerId,
+        effectiveViewerRole || undefined,
+        effectiveViewerName || undefined,
       );
       return res.status(200).json(conversations);
     } catch (error) {
@@ -3729,6 +3857,16 @@ export async function registerRoutes(
 
   app.patch("/api/admin/verifications/:id", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "verifications.review")) {
+        return res.status(403).json({ message: "You do not have permission to review verifications." });
+      }
+
       const { id } = req.params;
       const status = req.body?.status as AdminVerificationStatus | undefined;
       const allowedStatuses: AdminVerificationStatus[] = [
@@ -3758,6 +3896,16 @@ export async function registerRoutes(
 
   app.patch("/api/admin/flagged-listings/:id/status", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "flagged.manage")) {
+        return res.status(403).json({ message: "You do not have permission to manage flagged listings." });
+      }
+
       const { id } = req.params;
       const status = req.body?.status as AdminFlaggedListingStatus | undefined;
       const allowedStatuses: AdminFlaggedListingStatus[] = ["Open", "Under Review", "Cleared"];
@@ -3783,6 +3931,16 @@ export async function registerRoutes(
 
   app.post("/api/admin/flagged-listings/:id/comments", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "flagged.comment")) {
+        return res.status(403).json({ message: "You do not have permission to comment on flagged listings." });
+      }
+
       const { id } = req.params;
       const comment = String(req.body?.comment ?? "").trim();
       const problemTag = String(req.body?.problemTag ?? "").trim();
@@ -3804,8 +3962,8 @@ export async function registerRoutes(
       const savedComment = await addFlaggedListingComment(id, {
         comment,
         problemTag,
-        createdBy,
-        createdById: createdById || undefined,
+        createdBy: createdBy || authActor.name,
+        createdById: createdById || authActor.userId || undefined,
       });
 
       return res.status(200).json(savedComment);
@@ -4038,10 +4196,21 @@ export async function registerRoutes(
 
   app.post("/api/chat-actions/:actionId/resolve", async (req: Request, res: Response) => {
     try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+
       const actionId = String(req.params?.actionId ?? "").trim();
-      const actorUserId = String(req.body?.actorUserId ?? "").trim();
-      const actorName = String(req.body?.actorName ?? "Action Resolver").trim();
-      const actorRole = normalizeActionRole(req.body?.actorRole);
+      const actorUserIdRaw = String(req.body?.actorUserId ?? "").trim();
+      if (actorUserIdRaw && actorUserIdRaw !== authActor.userId) {
+        return res.status(403).json({ message: "actorUserId does not match authenticated user." });
+      }
+      const actorUserId = authActor.userId;
+      const actorName = String(req.body?.actorName ?? authActor.name ?? "Action Resolver").trim();
+      const actorRole = normalizeActionRole(authActor.role);
       const decision = String(req.body?.decision ?? "").trim().toLowerCase();
       const resolutionPayload = req.body?.payload;
       if (!actionId || !actorUserId || (decision !== "accept" && decision !== "decline" && decision !== "submit")) {
@@ -4304,15 +4473,20 @@ export async function registerRoutes(
 
   app.post("/api/payout-ledger/:entryId/status", async (req: Request, res: Response) => {
     try {
-      const entryId = String(req.params?.entryId ?? "").trim();
-      const statusRaw = String(req.body?.status ?? "").trim().toLowerCase();
-      const actorRole = normalizeActionRole(req.body?.actorRole);
-      if (!entryId || !statusRaw) {
-        return res.status(400).json({ message: "entryId and status are required." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "commissions.manage")) {
+        return res.status(403).json({ message: "You do not have permission to update payout ledger status." });
       }
 
-      if (actorRole !== "admin" && actorRole !== "support") {
-        return res.status(403).json({ message: "Only admin/support can update payout ledger status." });
+      const entryId = String(req.params?.entryId ?? "").trim();
+      const statusRaw = String(req.body?.status ?? "").trim().toLowerCase();
+      if (!entryId || !statusRaw) {
+        return res.status(400).json({ message: "entryId and status are required." });
       }
 
       if (
@@ -4327,7 +4501,7 @@ export async function registerRoutes(
       const updated = await updatePayoutLedgerEntryStatus({
         entryId,
         status: statusRaw as "claimed" | "paid" | "failed" | "cancelled",
-        actorUserId: String(req.body?.actorUserId ?? "").trim() || undefined,
+        actorUserId: authActor.userId,
         reason: String(req.body?.reason ?? "").trim() || undefined,
         reference: String(req.body?.reference ?? "").trim() || undefined,
         metadata:
@@ -4370,9 +4544,14 @@ export async function registerRoutes(
 
   app.get("/api/disputes/open", async (req: Request, res: Response) => {
     try {
-      const actorRole = normalizeActionRole(req.query?.actorRole);
-      if (!isPrivilegedActorRole(actorRole)) {
-        return res.status(403).json({ message: "Only admin/support can view all open disputes." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "chat.moderate")) {
+        return res.status(403).json({ message: "You do not have permission to view open disputes." });
       }
 
       const limit = Number(req.query?.limit);
@@ -4483,11 +4662,18 @@ export async function registerRoutes(
 
   app.post("/api/disputes/:disputeId/resolve", async (req: Request, res: Response) => {
     try {
-      const disputeId = String(req.params?.disputeId ?? "").trim();
-      const actorRole = normalizeActionRole(req.body?.resolvedByRole);
-      if (!isPrivilegedActorRole(actorRole)) {
-        return res.status(403).json({ message: "Only admin/support can resolve disputes." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
       }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "chat.moderate")) {
+        return res.status(403).json({ message: "You do not have permission to resolve disputes." });
+      }
+
+      const disputeId = String(req.params?.disputeId ?? "").trim();
+      const actorRole = normalizeActionRole(authActor.role);
 
       const nextStatusRaw = String(req.body?.status ?? "resolved").trim().toLowerCase();
       const nextStatus =
@@ -4496,7 +4682,7 @@ export async function registerRoutes(
       const resolved = await resolveTransactionDispute({
         disputeId,
         status: nextStatus,
-        resolvedByUserId: String(req.body?.resolvedByUserId ?? "").trim() || undefined,
+        resolvedByUserId: authActor.userId,
         resolution: String(req.body?.resolution ?? "").trim() || undefined,
         resolutionTargetStatus: String(req.body?.resolutionTargetStatus ?? "").trim().toLowerCase() as
           | TransactionStatus
@@ -4513,8 +4699,8 @@ export async function registerRoutes(
       try {
         await sendConversationMessage({
           conversationId: resolved.conversationId,
-          senderId: String(req.body?.resolvedByUserId ?? "").trim() || randomUUID(),
-          senderName: String(req.body?.resolvedByName ?? "Justice City Support").trim(),
+          senderId: authActor.userId || randomUUID(),
+          senderName: String(req.body?.resolvedByName ?? authActor.name ?? "Justice City Support").trim(),
           senderRole: actorRole,
           messageType: "issue_card",
           content: "Dispute resolved",
@@ -4570,9 +4756,15 @@ export async function registerRoutes(
 
   app.post("/api/service-pdf-jobs", async (req: Request, res: Response) => {
     try {
-      const actorRole = normalizeActionRole(req.body?.actorRole);
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      const actorRole = normalizeActionRole(authActor.role);
       if (!isPrivilegedActorRole(actorRole) && actorRole !== "agent") {
-        return res.status(403).json({ message: "Only admin/support/agent can queue service PDF jobs." });
+        return res.status(403).json({ message: "Only admin/agent can queue service PDF jobs." });
       }
 
       let conversationId = String(req.body?.conversationId ?? "").trim();
@@ -4589,7 +4781,7 @@ export async function registerRoutes(
         conversationId,
         serviceRequestId: String(req.body?.serviceRequestId ?? "").trim() || undefined,
         transactionId,
-        createdByUserId: String(req.body?.createdByUserId ?? "").trim() || undefined,
+        createdByUserId: authActor.userId,
         outputBucket: String(req.body?.outputBucket ?? "").trim() || undefined,
         outputPath: String(req.body?.outputPath ?? "").trim() || undefined,
         maxAttempts:
@@ -4611,9 +4803,14 @@ export async function registerRoutes(
 
   app.post("/api/service-pdf-jobs/process-next", async (req: Request, res: Response) => {
     try {
-      const actorRole = normalizeActionRole(req.body?.actorRole);
-      if (!isPrivilegedActorRole(actorRole)) {
-        return res.status(403).json({ message: "Only admin/support can process queued jobs manually." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "chat.moderate")) {
+        return res.status(403).json({ message: "You do not have permission to process queued jobs manually." });
       }
       const job = await processNextServicePdfJob();
       return res.status(200).json({ job });
@@ -4643,9 +4840,15 @@ export async function registerRoutes(
 
   app.post("/api/provider-links", async (req: Request, res: Response) => {
     try {
-      const actorRole = normalizeActionRole(req.body?.createdByRole);
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      const actorRole = normalizeActionRole(authActor.role);
       if (!isPrivilegedActorRole(actorRole) && actorRole !== "agent") {
-        return res.status(403).json({ message: "Only admin/support/agent can create provider links." });
+        return res.status(403).json({ message: "Only admin/agent can create provider links." });
       }
 
       const conversationId = String(req.body?.conversationId ?? "").trim();
@@ -4662,7 +4865,7 @@ export async function registerRoutes(
           req.body?.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
             ? (req.body.payload as Record<string, unknown>)
             : undefined,
-        createdByUserId: String(req.body?.createdByUserId ?? "").trim() || undefined,
+        createdByUserId: authActor.userId,
       });
 
       const baseUrl = resolvePublicAppBaseUrl(req);
@@ -4680,9 +4883,14 @@ export async function registerRoutes(
 
   app.post("/api/provider-links/:linkId/revoke", async (req: Request, res: Response) => {
     try {
-      const actorRole = normalizeActionRole(req.body?.actorRole);
-      if (!isPrivilegedActorRole(actorRole)) {
-        return res.status(403).json({ message: "Only admin/support can revoke provider links." });
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+      if (!ensureActorPermission(authActor, "chat.moderate")) {
+        return res.status(403).json({ message: "You do not have permission to revoke provider links." });
       }
       const linkId = String(req.params?.linkId ?? "").trim();
       if (!linkId) {
