@@ -267,6 +267,18 @@ export const utilityBills = pgTable("utility_bills", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const propertyExpenses = pgTable("property_expenses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  listingId: uuid("listing_id"),
+  ownerUserId: uuid("owner_user_id"),
+  category: text("category").notNull(),
+  amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  expenseDate: date("expense_date").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

@@ -56,6 +56,13 @@ import {
   type UtilityBillType,
 } from "@/lib/utility-bills";
 import {
+  createPropertyExpense,
+  deletePropertyExpense,
+  fetchPropertyExpenses,
+  type PropertyExpense,
+  type PropertyExpenseCategory,
+} from "@/lib/property-expenses";
+import {
   deleteAgentListing as deleteAgentListingApi,
   fetchAgentListings,
   updateAgentListing as updateAgentListingApi,
@@ -199,6 +206,8 @@ export default function ModernAgentDashboardView({
   const canEditVerificationProgress = isAdmin;
   const canViewBills = role === "owner" || role === "admin";
   const canManageBills = role === "owner" || role === "admin";
+  const canViewExpenses = role === "owner" || role === "admin";
+  const canManageExpenses = role === "owner" || role === "admin";
   const dashboardTitle =
     role === "admin"
       ? "Admin Listings Console"
@@ -283,6 +292,23 @@ export default function ModernAgentDashboardView({
     billType: "Electricity",
     amount: "",
     dueDate: "",
+    notes: "",
+  });
+  const [propertyExpenses, setPropertyExpenses] = useState<PropertyExpense[]>([]);
+  const [isLoadingPropertyExpenses, setIsLoadingPropertyExpenses] = useState(false);
+  const [propertyExpensesError, setPropertyExpensesError] = useState<string | null>(null);
+  const [propertyExpenseActionId, setPropertyExpenseActionId] = useState<string | null>(null);
+  const [isCreatingPropertyExpense, setIsCreatingPropertyExpense] = useState(false);
+  const [expenseViewRange, setExpenseViewRange] = useState<"month" | "year">("month");
+  const [propertyExpenseForm, setPropertyExpenseForm] = useState<{
+    category: PropertyExpenseCategory;
+    amount: string;
+    expenseDate: string;
+    notes: string;
+  }>({
+    category: "Maintenance",
+    amount: "",
+    expenseDate: "",
     notes: "",
   });
 
@@ -420,6 +446,38 @@ export default function ModernAgentDashboardView({
       mounted = false;
     };
   }, [canViewBills, viewerId]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!canViewExpenses || !viewerId) {
+      setPropertyExpenses([]);
+      setPropertyExpensesError(null);
+      setIsLoadingPropertyExpenses(false);
+      return undefined;
+    }
+
+    setIsLoadingPropertyExpenses(true);
+    setPropertyExpensesError(null);
+    void fetchPropertyExpenses()
+      .then((rows) => {
+        if (!mounted) return;
+        setPropertyExpenses(Array.isArray(rows) ? rows : []);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : "Failed to load property expenses.";
+        setPropertyExpensesError(message);
+        setPropertyExpenses([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setIsLoadingPropertyExpenses(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [canViewExpenses, viewerId]);
 
   useEffect(() => {
     if (selectedListing) {
@@ -600,6 +658,107 @@ export default function ModernAgentDashboardView({
       })),
     [utilityBills],
   );
+
+  const refreshPropertyExpenses = async () => {
+    if (!canViewExpenses || !viewerId) return;
+    setIsLoadingPropertyExpenses(true);
+    setPropertyExpensesError(null);
+    try {
+      const rows = await fetchPropertyExpenses();
+      setPropertyExpenses(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load property expenses.";
+      setPropertyExpensesError(message);
+    } finally {
+      setIsLoadingPropertyExpenses(false);
+    }
+  };
+
+  const createNewPropertyExpense = async () => {
+    const amount = Number(propertyExpenseForm.amount.replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(amount) || amount < 0) {
+      toast({
+        title: "Invalid amount",
+        description: "Enter a valid expense amount before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCreatingPropertyExpense(true);
+    try {
+      const created = await createPropertyExpense({
+        category: propertyExpenseForm.category,
+        amount,
+        expenseDate: propertyExpenseForm.expenseDate || undefined,
+        notes: propertyExpenseForm.notes || undefined,
+      });
+      setPropertyExpenses((current) => [created, ...current]);
+      setPropertyExpenseForm({
+        category: "Maintenance",
+        amount: "",
+        expenseDate: "",
+        notes: "",
+      });
+      toast({
+        title: "Expense recorded",
+        description: "Property expense has been added.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create property expense.";
+      toast({
+        title: "Create failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreatingPropertyExpense(false);
+    }
+  };
+
+  const removePropertyExpense = async (expense: PropertyExpense) => {
+    setPropertyExpenseActionId(expense.id);
+    try {
+      await deletePropertyExpense(expense.id);
+      setPropertyExpenses((current) => current.filter((item) => item.id !== expense.id));
+      toast({
+        title: "Expense deleted",
+        description: "Expense entry removed.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete property expense.";
+      toast({
+        title: "Delete failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setPropertyExpenseActionId(null);
+    }
+  };
+
+  const propertyExpensesInRange = useMemo(() => {
+    const now = new Date();
+    return propertyExpenses.filter((expense) => {
+      const timestamp = expense.expenseDate ? new Date(expense.expenseDate).getTime() : Number.NaN;
+      if (!Number.isFinite(timestamp)) return expenseViewRange === "year";
+      const date = new Date(timestamp);
+      if (expenseViewRange === "month") {
+        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+      }
+      return date.getFullYear() === now.getFullYear();
+    });
+  }, [expenseViewRange, propertyExpenses]);
+
+  const propertyExpenseTotals = useMemo(() => {
+    const total = propertyExpensesInRange.reduce((sum, expense) => sum + expense.amount, 0);
+    const byCategory = propertyExpensesInRange.reduce<Record<string, number>>((acc, expense) => {
+      const key = expense.category;
+      acc[key] = (acc[key] ?? 0) + expense.amount;
+      return acc;
+    }, {});
+    return { total, byCategory };
+  }, [propertyExpensesInRange]);
 
   const closedDeals = useMemo(
     () => listings.filter((listing: any) => isClosedDealStatus(String(listing.status ?? ""))),
@@ -1605,6 +1764,11 @@ export default function ModernAgentDashboardView({
               <FileText className="w-4 h-4" /> Bills
             </TabsTrigger>
           )}
+          {canViewExpenses && (
+            <TabsTrigger value="expenses" className="gap-2">
+              <FileText className="w-4 h-4" /> Expenses
+            </TabsTrigger>
+          )}
           <TabsTrigger value="verifications" className="gap-2">
             <Clock className="w-4 h-4" /> Pending Verifications
           </TabsTrigger>
@@ -2080,6 +2244,183 @@ export default function ModernAgentDashboardView({
                         </TableRow>
                       );
                     })
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="expenses">
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Property Expenses</CardTitle>
+                <CardDescription>
+                  Track monthly and annual owner costs across maintenance, utilities, and taxes.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  title="Expense range"
+                  aria-label="Expense range"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                  value={expenseViewRange}
+                  onChange={(event) =>
+                    setExpenseViewRange(event.target.value === "year" ? "year" : "month")
+                  }
+                >
+                  <option value="month">This Month</option>
+                  <option value="year">This Year</option>
+                </select>
+                <Button variant="outline" onClick={() => void refreshPropertyExpenses()}>
+                  Refresh
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">
+                    {expenseViewRange === "month" ? "Monthly Total" : "Annual Total"}
+                  </p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">
+                    {formatNaira(propertyExpenseTotals.total)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Top Categories</p>
+                  <div className="mt-2 space-y-1 text-sm text-slate-700">
+                    {Object.entries(propertyExpenseTotals.byCategory).length === 0 ? (
+                      <p>No expense categories yet.</p>
+                    ) : (
+                      Object.entries(propertyExpenseTotals.byCategory)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([category, amount]) => (
+                          <div key={category} className="flex items-center justify-between gap-2">
+                            <span>{category}</span>
+                            <span className="font-semibold text-slate-900">{formatNaira(amount)}</span>
+                          </div>
+                        ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {canManageExpenses && (
+                <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4">
+                  <select
+                    title="Expense category"
+                    aria-label="Expense category"
+                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                    value={propertyExpenseForm.category}
+                    onChange={(event) =>
+                      setPropertyExpenseForm((current) => ({
+                        ...current,
+                        category: event.target.value as PropertyExpenseCategory,
+                      }))
+                    }
+                  >
+                    <option value="Maintenance">Maintenance</option>
+                    <option value="Repairs">Repairs</option>
+                    <option value="Taxes">Taxes</option>
+                    <option value="Utilities">Utilities</option>
+                    <option value="Security">Security</option>
+                    <option value="Other">Other</option>
+                  </select>
+                  <Input
+                    placeholder="Amount (NGN)"
+                    value={propertyExpenseForm.amount}
+                    onChange={(event) =>
+                      setPropertyExpenseForm((current) => ({ ...current, amount: event.target.value }))
+                    }
+                  />
+                  <Input
+                    type="date"
+                    value={propertyExpenseForm.expenseDate}
+                    onChange={(event) =>
+                      setPropertyExpenseForm((current) => ({
+                        ...current,
+                        expenseDate: event.target.value,
+                      }))
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      className="flex-1"
+                      placeholder="Notes"
+                      value={propertyExpenseForm.notes}
+                      onChange={(event) =>
+                        setPropertyExpenseForm((current) => ({ ...current, notes: event.target.value }))
+                      }
+                    />
+                    <Button
+                      disabled={isCreatingPropertyExpense}
+                      onClick={() => void createNewPropertyExpense()}
+                    >
+                      {isCreatingPropertyExpense ? "Saving..." : "Add"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {propertyExpensesError && (
+                <p className="text-sm text-amber-600">Expense sync issue: {propertyExpensesError}</p>
+              )}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Expense Date</TableHead>
+                    <TableHead>Notes</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoadingPropertyExpenses && propertyExpensesInRange.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        Loading expenses...
+                      </TableCell>
+                    </TableRow>
+                  ) : propertyExpensesInRange.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                        No expenses in this range.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    propertyExpensesInRange.map((expense) => (
+                      <TableRow key={expense.id}>
+                        <TableCell>{expense.category}</TableCell>
+                        <TableCell>{formatNaira(expense.amount)}</TableCell>
+                        <TableCell>
+                          {expense.expenseDate
+                            ? new Date(expense.expenseDate).toLocaleDateString("en-US")
+                            : "Not set"}
+                        </TableCell>
+                        <TableCell className="max-w-[260px] truncate">
+                          {expense.notes || "No notes"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {canManageExpenses ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={propertyExpenseActionId === expense.id}
+                              onClick={() => void removePropertyExpense(expense)}
+                            >
+                              Delete
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-slate-500">Read-only</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
                   )}
                 </TableBody>
               </Table>
