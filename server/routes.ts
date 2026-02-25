@@ -102,6 +102,7 @@ const VERIFICATION_DOCUMENTS_TABLE =
 const LISTINGS_TABLE = process.env.SUPABASE_LISTINGS_TABLE || "listings";
 const LISTING_IMAGES_TABLE = process.env.SUPABASE_LISTING_IMAGES_TABLE || "listing_images";
 const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || "listing_documents";
+const AGENT_PROFILES_TABLE = process.env.SUPABASE_AGENT_PROFILES_TABLE || "agent_profiles";
 const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
 const PROPERTY_DOCUMENTS_BUCKET =
   process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
@@ -638,6 +639,156 @@ type AuthenticatedActor = {
   name: string;
 };
 
+type AgentProfileRow = {
+  user_id: string;
+  display_name?: string | null;
+  bio?: string | null;
+  sales_rating?: number | string | null;
+  review_count?: number | null;
+  recent_deals_count?: number | null;
+  closed_deals_count?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type AgentProfileRecord = {
+  userId: string;
+  displayName?: string;
+  bio?: string;
+  salesRating: number;
+  reviewCount: number;
+  recentDealsCount: number;
+  closedDealsCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+function toNumber(value: unknown, fallback = 0): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function mapAgentProfileRow(
+  row: AgentProfileRow,
+  options?: { fallbackDisplayName?: string },
+): AgentProfileRecord {
+  const fallbackDisplayName = String(options?.fallbackDisplayName ?? "").trim();
+  return {
+    userId: String(row.user_id ?? "").trim(),
+    displayName: String(row.display_name ?? "").trim() || fallbackDisplayName || undefined,
+    bio: String(row.bio ?? "").trim() || undefined,
+    salesRating: toNumber(row.sales_rating, 0),
+    reviewCount: Math.max(0, Math.floor(toNumber(row.review_count, 0))),
+    recentDealsCount: Math.max(0, Math.floor(toNumber(row.recent_deals_count, 0))),
+    closedDealsCount: Math.max(0, Math.floor(toNumber(row.closed_deals_count, 0))),
+    createdAt: String(row.created_at ?? "").trim() || undefined,
+    updatedAt: String(row.updated_at ?? "").trim() || undefined,
+  };
+}
+
+async function loadListingDealMetrics(
+  client: SupabaseClient,
+  userId: string,
+): Promise<{ recentDealsCount: number; closedDealsCount: number }> {
+  const { data, error } = await client
+    .from(LISTINGS_TABLE)
+    .select("status, updated_at, created_at")
+    .eq("agent_id", userId)
+    .in("status", ["sold", "rented"]);
+
+  if (error) {
+    if (isMissingTableOrColumnError(error)) {
+      return { recentDealsCount: 0, closedDealsCount: 0 };
+    }
+    throw error;
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  const now = Date.now();
+  const recentWindowMs = 1000 * 60 * 60 * 24 * 30;
+  let recentDealsCount = 0;
+  for (const row of rows) {
+    const updatedAtIso = String((row as Record<string, unknown>)?.updated_at ?? "").trim();
+    const createdAtIso = String((row as Record<string, unknown>)?.created_at ?? "").trim();
+    const timestamp =
+      (updatedAtIso && new Date(updatedAtIso).getTime()) ||
+      (createdAtIso && new Date(createdAtIso).getTime()) ||
+      Number.NaN;
+    if (Number.isFinite(timestamp) && now - timestamp <= recentWindowMs) {
+      recentDealsCount += 1;
+    }
+  }
+
+  return {
+    recentDealsCount,
+    closedDealsCount: rows.length,
+  };
+}
+
+async function getOrCreateAgentProfile(
+  client: SupabaseClient,
+  userId: string,
+  options?: { fallbackDisplayName?: string },
+): Promise<AgentProfileRecord> {
+  const fallbackDisplayName = String(options?.fallbackDisplayName ?? "").trim();
+  const { data, error } = await client
+    .from(AGENT_PROFILES_TABLE)
+    .select(
+      "user_id, display_name, bio, sales_rating, review_count, recent_deals_count, closed_deals_count, created_at, updated_at",
+    )
+    .eq("user_id", userId)
+    .maybeSingle<AgentProfileRow>();
+
+  if (error && !isMissingTableOrColumnError(error)) {
+    throw error;
+  }
+
+  if (data) {
+    return mapAgentProfileRow(data, { fallbackDisplayName });
+  }
+
+  const metrics = await loadListingDealMetrics(client, userId);
+  const insertPayload: Record<string, unknown> = {
+    user_id: userId,
+    recent_deals_count: metrics.recentDealsCount,
+    closed_deals_count: metrics.closedDealsCount,
+  };
+  if (fallbackDisplayName) {
+    insertPayload.display_name = fallbackDisplayName;
+  }
+
+  const { data: inserted, error: insertError } = await client
+    .from(AGENT_PROFILES_TABLE)
+    .upsert(insertPayload, { onConflict: "user_id" })
+    .select(
+      "user_id, display_name, bio, sales_rating, review_count, recent_deals_count, closed_deals_count, created_at, updated_at",
+    )
+    .maybeSingle<AgentProfileRow>();
+
+  if (insertError && !isMissingTableOrColumnError(insertError)) {
+    throw insertError;
+  }
+
+  if (inserted) {
+    return mapAgentProfileRow(inserted, { fallbackDisplayName });
+  }
+
+  return {
+    userId,
+    displayName: fallbackDisplayName || undefined,
+    bio: undefined,
+    salesRating: 0,
+    reviewCount: 0,
+    recentDealsCount: metrics.recentDealsCount,
+    closedDealsCount: metrics.closedDealsCount,
+  };
+}
+
 async function resolveAuthenticatedActor(
   client: SupabaseClient,
   req: Request,
@@ -1093,6 +1244,113 @@ export async function registerRoutes(
       return res.status(200).json(profile);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to update profile";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/agent-profiles/:userId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const targetUserId = String(req.params.userId ?? "").trim();
+      if (!targetUserId) {
+        return res.status(400).json({ message: "userId is required." });
+      }
+
+      if (authActor.role !== "admin" && authActor.userId !== targetUserId) {
+        return res.status(403).json({ message: "userId does not match authenticated user." });
+      }
+
+      let fallbackDisplayName = authActor.userId === targetUserId ? authActor.name : "";
+      if (!fallbackDisplayName) {
+        const { data: userRow, error: userError } = await client
+          .from(USERS_TABLE)
+          .select("full_name")
+          .eq("id", targetUserId)
+          .maybeSingle<{ full_name?: string | null }>();
+        if (userError && !isMissingTableOrColumnError(userError)) {
+          throw userError;
+        }
+        fallbackDisplayName = String(userRow?.full_name ?? "").trim();
+      }
+
+      const profile = await getOrCreateAgentProfile(client, targetUserId, { fallbackDisplayName });
+      return res.status(200).json(profile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load agent profile.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.patch("/api/agent-profiles/:userId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const targetUserId = String(req.params.userId ?? "").trim();
+      if (!targetUserId) {
+        return res.status(400).json({ message: "userId is required." });
+      }
+
+      if (authActor.role !== "admin" && authActor.userId !== targetUserId) {
+        return res.status(403).json({ message: "userId does not match authenticated user." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const updates: Record<string, unknown> = { user_id: targetUserId };
+      let hasUpdates = false;
+
+      if (typeof body.displayName === "string") {
+        updates.display_name = body.displayName.trim() || null;
+        hasUpdates = true;
+      }
+      if (typeof body.bio === "string") {
+        updates.bio = body.bio.trim() || null;
+        hasUpdates = true;
+      }
+
+      if (!hasUpdates) {
+        return res.status(400).json({ message: "displayName or bio is required." });
+      }
+
+      const { data, error } = await client
+        .from(AGENT_PROFILES_TABLE)
+        .upsert(updates, { onConflict: "user_id" })
+        .select(
+          "user_id, display_name, bio, sales_rating, review_count, recent_deals_count, closed_deals_count, created_at, updated_at",
+        )
+        .maybeSingle<AgentProfileRow>();
+
+      if (error && !isMissingTableOrColumnError(error)) {
+        throw error;
+      }
+
+      const fallbackDisplayName =
+        typeof updates.display_name === "string" ? String(updates.display_name).trim() : authActor.name;
+
+      if (data) {
+        return res.status(200).json(mapAgentProfileRow(data, { fallbackDisplayName }));
+      }
+
+      const profile = await getOrCreateAgentProfile(client, targetUserId, { fallbackDisplayName });
+      return res.status(200).json(profile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update agent profile.";
       return res.status(502).json({ message });
     }
   });
