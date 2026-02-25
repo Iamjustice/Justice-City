@@ -12,6 +12,8 @@
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "guard:supabase": "node script/enforce-supabase-contract.mjs",
+    "ci:contract": "npm run guard:supabase",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
