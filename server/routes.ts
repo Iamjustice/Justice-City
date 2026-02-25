@@ -105,6 +105,8 @@ const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || 
 const AGENT_PROFILES_TABLE = process.env.SUPABASE_AGENT_PROFILES_TABLE || "agent_profiles";
 const UTILITY_BILLS_TABLE = process.env.SUPABASE_UTILITY_BILLS_TABLE || "utility_bills";
 const PROPERTY_EXPENSES_TABLE = process.env.SUPABASE_PROPERTY_EXPENSES_TABLE || "property_expenses";
+const USER_DOCUMENT_RECORDS_TABLE =
+  process.env.SUPABASE_USER_DOCUMENT_RECORDS_TABLE || "user_document_records";
 const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
 const PROPERTY_DOCUMENTS_BUCKET =
   process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
@@ -662,6 +664,45 @@ function canAccessPropertyExpenseRow(actor: AuthenticatedActor, row: PropertyExp
   return ownerUserId === actor.userId;
 }
 
+function canAccessUserDocumentRow(actor: AuthenticatedActor, row: UserDocumentRow): boolean {
+  if (actor.role === "admin") return true;
+  const participantIds = [
+    String(row.owner_user_id ?? "").trim(),
+    String(row.renter_user_id ?? "").trim(),
+    String(row.buyer_user_id ?? "").trim(),
+    String(row.seller_user_id ?? "").trim(),
+    String(row.agent_user_id ?? "").trim(),
+  ].filter(Boolean);
+  return participantIds.includes(actor.userId);
+}
+
+function applyActorDocumentRole(
+  actor: AuthenticatedActor,
+  payload: {
+    ownerUserId?: string | null;
+    renterUserId?: string | null;
+    buyerUserId?: string | null;
+    sellerUserId?: string | null;
+    agentUserId?: string | null;
+  },
+): {
+  ownerUserId?: string | null;
+  renterUserId?: string | null;
+  buyerUserId?: string | null;
+  sellerUserId?: string | null;
+  agentUserId?: string | null;
+} {
+  if (actor.role === "admin") return payload;
+
+  const next = { ...payload };
+  if (actor.role === "owner") next.ownerUserId = actor.userId;
+  if (actor.role === "renter") next.renterUserId = actor.userId;
+  if (actor.role === "buyer") next.buyerUserId = actor.userId;
+  if (actor.role === "seller") next.sellerUserId = actor.userId;
+  if (actor.role === "agent") next.agentUserId = actor.userId;
+  return next;
+}
+
 type AgentProfileRow = {
   user_id: string;
   display_name?: string | null;
@@ -982,6 +1023,81 @@ function mapPropertyExpenseRow(row: PropertyExpenseRow): PropertyExpenseRecord {
     notes: String(row.notes ?? "").trim() || undefined,
     createdAt: String(row.created_at ?? "").trim() || undefined,
     updatedAt: String(row.updated_at ?? "").trim() || undefined,
+  };
+}
+
+type UserDocumentDbType = "contract" | "title" | "invoice" | "receipt" | "attachment" | "other";
+type UserDocumentType = "Contract" | "Title" | "Invoice" | "Receipt" | "Attachment" | "Other";
+
+type UserDocumentRow = {
+  id: string;
+  listing_id?: string | null;
+  conversation_id?: string | null;
+  owner_user_id?: string | null;
+  renter_user_id?: string | null;
+  buyer_user_id?: string | null;
+  seller_user_id?: string | null;
+  agent_user_id?: string | null;
+  document_type?: string | null;
+  bucket_id?: string | null;
+  storage_path?: string | null;
+  display_name?: string | null;
+  created_at?: string | null;
+};
+
+type UserDocumentRecord = {
+  id: string;
+  listingId?: string;
+  conversationId?: string;
+  ownerUserId?: string;
+  renterUserId?: string;
+  buyerUserId?: string;
+  sellerUserId?: string;
+  agentUserId?: string;
+  documentType: UserDocumentType;
+  bucketId: string;
+  storagePath: string;
+  displayName?: string;
+  createdAt?: string;
+};
+
+function toUserDocumentDbType(rawValue: unknown): UserDocumentDbType {
+  const value = String(rawValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "contract") return "contract";
+  if (value === "title") return "title";
+  if (value === "invoice") return "invoice";
+  if (value === "receipt") return "receipt";
+  if (value === "attachment") return "attachment";
+  return "other";
+}
+
+function fromUserDocumentDbType(rawValue: unknown): UserDocumentType {
+  const value = toUserDocumentDbType(rawValue);
+  if (value === "contract") return "Contract";
+  if (value === "title") return "Title";
+  if (value === "invoice") return "Invoice";
+  if (value === "receipt") return "Receipt";
+  if (value === "attachment") return "Attachment";
+  return "Other";
+}
+
+function mapUserDocumentRow(row: UserDocumentRow): UserDocumentRecord {
+  return {
+    id: String(row.id ?? "").trim(),
+    listingId: String(row.listing_id ?? "").trim() || undefined,
+    conversationId: String(row.conversation_id ?? "").trim() || undefined,
+    ownerUserId: String(row.owner_user_id ?? "").trim() || undefined,
+    renterUserId: String(row.renter_user_id ?? "").trim() || undefined,
+    buyerUserId: String(row.buyer_user_id ?? "").trim() || undefined,
+    sellerUserId: String(row.seller_user_id ?? "").trim() || undefined,
+    agentUserId: String(row.agent_user_id ?? "").trim() || undefined,
+    documentType: fromUserDocumentDbType(row.document_type),
+    bucketId: String(row.bucket_id ?? "").trim() || "service-records",
+    storagePath: String(row.storage_path ?? "").trim(),
+    displayName: String(row.display_name ?? "").trim() || undefined,
+    createdAt: String(row.created_at ?? "").trim() || undefined,
   };
 }
 
@@ -2758,6 +2874,164 @@ export async function registerRoutes(
       return res.status(200).json({ ok: true, expenseId });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to delete property expense.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/user-documents", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const listingIdFilter = String(req.query?.listingId ?? "").trim();
+      const conversationIdFilter = String(req.query?.conversationId ?? "").trim();
+      const userIdFilter = String(req.query?.userId ?? "").trim();
+      const documentTypeFilterRaw = String(req.query?.documentType ?? "").trim();
+      const documentTypeFilter = documentTypeFilterRaw ? toUserDocumentDbType(documentTypeFilterRaw) : "";
+
+      let query = client
+        .from(USER_DOCUMENT_RECORDS_TABLE)
+        .select(
+          "id, listing_id, conversation_id, owner_user_id, renter_user_id, buyer_user_id, seller_user_id, agent_user_id, document_type, bucket_id, storage_path, display_name, created_at",
+        )
+        .order("created_at", { ascending: false });
+
+      if (listingIdFilter) query = query.eq("listing_id", listingIdFilter);
+      if (conversationIdFilter) query = query.eq("conversation_id", conversationIdFilter);
+      if (documentTypeFilter) query = query.eq("document_type", documentTypeFilter);
+
+      if (authActor.role !== "admin") {
+        query = query.or(
+          `owner_user_id.eq.${authActor.userId},renter_user_id.eq.${authActor.userId},buyer_user_id.eq.${authActor.userId},seller_user_id.eq.${authActor.userId},agent_user_id.eq.${authActor.userId}`,
+        );
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "User document records schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+
+      let rows = (Array.isArray(data) ? data : []) as UserDocumentRow[];
+      if (authActor.role !== "admin") {
+        rows = rows.filter((row) => canAccessUserDocumentRow(authActor, row));
+      }
+
+      if (userIdFilter) {
+        if (authActor.role !== "admin" && userIdFilter !== authActor.userId) {
+          return res.status(403).json({ message: "userId does not match authenticated user." });
+        }
+        rows = rows.filter((row) => {
+          const participantIds = [
+            String(row.owner_user_id ?? "").trim(),
+            String(row.renter_user_id ?? "").trim(),
+            String(row.buyer_user_id ?? "").trim(),
+            String(row.seller_user_id ?? "").trim(),
+            String(row.agent_user_id ?? "").trim(),
+          ].filter(Boolean);
+          return participantIds.includes(userIdFilter);
+        });
+      }
+
+      return res.status(200).json(rows.map((row) => mapUserDocumentRow(row)));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load user documents.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/user-documents", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const listingId = String(body.listingId ?? "").trim() || null;
+      const conversationId = String(body.conversationId ?? "").trim() || null;
+      const documentType = toUserDocumentDbType(body.documentType);
+      const bucketId = String(body.bucketId ?? "").trim() || "service-records";
+      const storagePath = String(body.storagePath ?? "").trim();
+      const displayName = String(body.displayName ?? "").trim() || null;
+
+      if (!storagePath) {
+        return res.status(400).json({ message: "storagePath is required." });
+      }
+
+      const rolePayload = applyActorDocumentRole(authActor, {
+        ownerUserId: String(body.ownerUserId ?? "").trim() || null,
+        renterUserId: String(body.renterUserId ?? "").trim() || null,
+        buyerUserId: String(body.buyerUserId ?? "").trim() || null,
+        sellerUserId: String(body.sellerUserId ?? "").trim() || null,
+        agentUserId: String(body.agentUserId ?? "").trim() || null,
+      });
+
+      const participants = [
+        rolePayload.ownerUserId,
+        rolePayload.renterUserId,
+        rolePayload.buyerUserId,
+        rolePayload.sellerUserId,
+        rolePayload.agentUserId,
+      ].filter((value) => Boolean(String(value ?? "").trim()));
+
+      if (participants.length === 0) {
+        return res.status(400).json({ message: "At least one participant user id is required." });
+      }
+
+      const { data, error } = await client
+        .from(USER_DOCUMENT_RECORDS_TABLE)
+        .insert({
+          listing_id: listingId,
+          conversation_id: conversationId,
+          owner_user_id: rolePayload.ownerUserId ?? null,
+          renter_user_id: rolePayload.renterUserId ?? null,
+          buyer_user_id: rolePayload.buyerUserId ?? null,
+          seller_user_id: rolePayload.sellerUserId ?? null,
+          agent_user_id: rolePayload.agentUserId ?? null,
+          document_type: documentType,
+          bucket_id: bucketId,
+          storage_path: storagePath,
+          display_name: displayName,
+        })
+        .select(
+          "id, listing_id, conversation_id, owner_user_id, renter_user_id, buyer_user_id, seller_user_id, agent_user_id, document_type, bucket_id, storage_path, display_name, created_at",
+        )
+        .maybeSingle<UserDocumentRow>();
+
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "User document records schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+      if (!data) {
+        return res.status(502).json({ message: "Failed to create user document record." });
+      }
+
+      return res.status(201).json(mapUserDocumentRow(data));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create user document record.";
       return res.status(502).json({ message });
     }
   });
