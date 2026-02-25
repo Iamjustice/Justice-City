@@ -21,6 +21,7 @@ interface User {
   homeAddress?: string;
   officeAddress?: string;
   avatar?: string;
+  permissions: string[];
 }
 
 interface SignInPayload {
@@ -66,6 +67,34 @@ function normalizeRole(
   }
   if (role === "owner" || role === "renter") return role;
   return "buyer";
+}
+
+function defaultPermissionsForRole(role: Exclude<UserRole, null>): string[] {
+  const map: Record<Exclude<UserRole, null>, string[]> = {
+    admin: [
+      "users.read",
+      "users.manage",
+      "verifications.read",
+      "verifications.review",
+      "flagged.read",
+      "flagged.manage",
+      "flagged.comment",
+      "chat.use",
+      "chat.moderate",
+      "commissions.read",
+      "commissions.manage",
+      "documents.read",
+      "billing.read",
+      "billing.manage",
+      "revenue.read",
+    ],
+    agent: ["chat.use", "verifications.read", "commissions.read", "documents.read"],
+    seller: ["chat.use", "verifications.read", "documents.read"],
+    buyer: ["chat.use", "verifications.read", "documents.read"],
+    owner: ["chat.use", "verifications.read", "documents.read", "billing.read", "billing.manage"],
+    renter: ["chat.use", "verifications.read", "documents.read", "billing.read"],
+  };
+  return map[role] ?? [];
 }
 
 function formatAuthError(error: unknown): string {
@@ -184,8 +213,17 @@ function toAppUser(payload: {
   homeAddress?: string;
   officeAddress?: string;
   avatar?: string;
+  permissions?: string[];
 }): User {
   const email = String(payload.email ?? "").trim();
+  const normalizedRole = normalizeRole(payload.role ?? "buyer", { allowAdmin: true });
+  const explicitPermissions = Array.isArray(payload.permissions)
+    ? payload.permissions.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  const resolvedPermissions =
+    explicitPermissions.length > 0
+      ? explicitPermissions
+      : defaultPermissionsForRole(normalizedRole);
   const resolvedName =
     String(payload.name ?? "").trim() ||
     email.split("@")[0] ||
@@ -196,7 +234,7 @@ function toAppUser(payload: {
     name: resolvedName,
     nickname: String(payload.nickname ?? "").trim() || undefined,
     email,
-    role: normalizeRole(payload.role ?? "buyer", { allowAdmin: true }),
+    role: normalizedRole,
     isVerified: Boolean(payload.isVerified),
     emailVerified: Boolean(payload.emailVerified),
     phoneVerified: Boolean(payload.phoneVerified),
@@ -210,6 +248,7 @@ function toAppUser(payload: {
     homeAddress: String(payload.homeAddress ?? "").trim() || undefined,
     officeAddress: String(payload.officeAddress ?? "").trim() || undefined,
     avatar: String(payload.avatar ?? "").trim() || undefined,
+    permissions: resolvedPermissions,
   };
 }
 
@@ -289,6 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         homeAddress?: string;
         officeAddress?: string;
         avatar?: string;
+        permissions?: string[];
       };
       return toAppUser(payload);
     },

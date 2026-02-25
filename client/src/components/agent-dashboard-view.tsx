@@ -1269,7 +1269,9 @@ export default function ModernAgentDashboardView({
   };
 
   const deleteListing = async (listing: any) => {
-    if (!canModifyListing(listing)) {
+    const listingId = String(listing?.id ?? "").trim();
+    const isMockListing = !isUuidListingId(listingId);
+    if (!isMockListing && !canModifyListing(listing)) {
       toast({
         title: "Permission denied",
         description: "You can only delete listings you own.",
@@ -1277,14 +1279,13 @@ export default function ModernAgentDashboardView({
       });
       return;
     }
-    const listingId = String(listing?.id ?? "").trim();
-    if (!isUuidListingId(listingId)) {
+    if (isMockListing) {
       mutateListings((current) => current.filter((item) => item.id !== listing.id));
       setSelectedListing((current: any) => (current?.id === listing.id ? null : current));
       setVerificationListing((current: any) => (current?.id === listing.id ? null : current));
       toast({
-        title: "Listing removed",
-        description: `${listing.title} has been deleted from your dashboard.`,
+        title: "Mock listing removed",
+        description: `${listing.title} was removed from your local dashboard list.`,
       });
       return;
     }
@@ -1957,6 +1958,7 @@ export default function ModernAgentDashboardView({
                   listings.map((listing: any) => {
                     const isUpdatingListing = listingActionInFlightId === String(listing.id);
                     const canManageListing = canModifyListing(listing);
+                    const canDeleteMockListing = !canManageListing && !isUuidListingId(String(listing.id ?? ""));
                     return (
                     <TableRow key={listing.id}>
                       <TableCell className="font-medium">
@@ -2088,16 +2090,16 @@ export default function ModernAgentDashboardView({
                               </DropdownMenuItem>
                             ) : null}
                             {canManageListing && <DropdownMenuSeparator />}
-                            {canManageListing && (
+                            {(canManageListing || canDeleteMockListing) && (
                               <DropdownMenuItem
                                 className="text-red-600 focus:text-red-600"
                                 onClick={() => void deleteListing(listing)}
                               >
                                 <Trash2 className="mr-2 h-4 w-4" />
-                                Delete Listing
+                                {canDeleteMockListing ? "Delete Mock Listing" : "Delete Listing"}
                               </DropdownMenuItem>
                             )}
-                            {!canManageListing && (
+                            {!canManageListing && !canDeleteMockListing && (
                               <DropdownMenuItem disabled>
                                 Read-only listing
                               </DropdownMenuItem>

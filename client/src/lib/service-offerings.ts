@@ -31,12 +31,11 @@ export async function fetchServiceOfferings(): Promise<ServiceOffering[]> {
 
 export async function updateAdminServiceOffering(
   code: string,
-  payload: { price: string; turnaround: string; actorRole?: string },
+  payload: { price: string; turnaround: string },
 ): Promise<ServiceOffering> {
   const response = await apiRequest("PATCH", `/api/admin/service-offerings/${encodeURIComponent(code)}`, {
     price: payload.price,
     turnaround: payload.turnaround,
-    actorRole: payload.actorRole,
   });
 
   return response.json();

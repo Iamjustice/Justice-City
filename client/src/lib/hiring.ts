@@ -89,23 +89,8 @@ export async function createHiringApplication(
   return response.json();
 }
 
-export async function fetchAdminHiringApplications(options?: {
-  actorRole?: string;
-}): Promise<HiringApplication[]> {
-  const params = new URLSearchParams();
-  if (options?.actorRole) {
-    params.set("actorRole", options.actorRole);
-  }
-
-  const response = await fetch(
-    `/api/admin/hiring-applications${params.toString() ? `?${params.toString()}` : ""}`,
-    { credentials: "include" },
-  );
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
-
+export async function fetchAdminHiringApplications(): Promise<HiringApplication[]> {
+  const response = await apiRequest("GET", "/api/admin/hiring-applications");
   const data = (await response.json()) as unknown;
   return Array.isArray(data) ? (data as HiringApplication[]) : [];
 }
@@ -117,7 +102,6 @@ export async function updateAdminHiringApplicationStatus(
     reviewerNotes?: string;
     reviewerId?: string;
     reviewerName?: string;
-    actorRole?: string;
   },
 ): Promise<HiringApplication> {
   const response = await apiRequest(
@@ -128,7 +112,6 @@ export async function updateAdminHiringApplicationStatus(
       reviewerNotes: payload.reviewerNotes,
       reviewerId: payload.reviewerId,
       reviewerName: payload.reviewerName,
-      actorRole: payload.actorRole,
     },
   );
   return response.json();

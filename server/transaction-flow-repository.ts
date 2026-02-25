@@ -85,6 +85,34 @@ export type TransactionRecord = {
   updatedAt: string;
 };
 
+export type TransactionStatusHistoryRecord = {
+  id: string;
+  transactionId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  changedByUserId: string | null;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type PayoutLedgerStatus = "claimed" | "paid" | "failed" | "cancelled";
+
+export type PayoutLedgerRecord = {
+  id: string;
+  transactionId: string;
+  ledgerType: "payout" | "refund" | "commission";
+  idempotencyKey: string;
+  amount: number;
+  currency: string;
+  recipientUserId: string | null;
+  status: PayoutLedgerStatus;
+  reference: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ChatActionRecord = {
   id: string;
   transactionId: string;
@@ -151,6 +179,17 @@ type ClaimPayoutInput = {
   amount: number;
   currency?: string;
   recipientUserId?: string;
+  reference?: string;
+  metadata?: Record<string, unknown>;
+  actorUserId?: string;
+  reason?: string;
+};
+
+type UpdatePayoutLedgerStatusInput = {
+  entryId: string;
+  status: PayoutLedgerStatus;
+  actorUserId?: string;
+  reason?: string;
   reference?: string;
   metadata?: Record<string, unknown>;
 };
@@ -284,6 +323,16 @@ function normalizeCurrency(raw: unknown): string {
   return value || "NGN";
 }
 
+function normalizePayoutLedgerStatus(raw: unknown): PayoutLedgerStatus {
+  const value = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "paid") return "paid";
+  if (value === "failed") return "failed";
+  if (value === "cancelled") return "cancelled";
+  return "claimed";
+}
+
 function normalizeIsoTimestamp(raw: unknown): string | null {
   const value = String(raw ?? "").trim();
   if (!value) return null;
@@ -346,6 +395,44 @@ function mapChatActionRow(row: Record<string, unknown>): ChatActionRecord {
     resolvedByUserId: row.resolved_by_user_id ? String(row.resolved_by_user_id) : null,
     expiresAt: row.expires_at ? String(row.expires_at) : null,
     resolvedAt: row.resolved_at ? String(row.resolved_at) : null,
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    updatedAt: String(row.updated_at ?? new Date().toISOString()),
+  };
+}
+
+function mapStatusHistoryRow(row: Record<string, unknown>): TransactionStatusHistoryRecord {
+  return {
+    id: String(row.id ?? ""),
+    transactionId: String(row.transaction_id ?? ""),
+    fromStatus: row.from_status ? String(row.from_status) : null,
+    toStatus: String(row.to_status ?? ""),
+    changedByUserId: row.changed_by_user_id ? String(row.changed_by_user_id) : null,
+    reason: row.reason ? String(row.reason) : null,
+    metadata: toObject(row.metadata),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
+function mapPayoutLedgerRow(row: Record<string, unknown>): PayoutLedgerRecord {
+  const normalizedLedgerType = String(row.ledger_type ?? "").trim().toLowerCase();
+  const ledgerType: "payout" | "refund" | "commission" =
+    normalizedLedgerType === "refund"
+      ? "refund"
+      : normalizedLedgerType === "commission"
+        ? "commission"
+        : "payout";
+
+  return {
+    id: String(row.id ?? ""),
+    transactionId: String(row.transaction_id ?? ""),
+    ledgerType,
+    idempotencyKey: String(row.idempotency_key ?? ""),
+    amount: toPositiveNumberOrZero(row.amount),
+    currency: normalizeCurrency(row.currency),
+    recipientUserId: row.recipient_user_id ? String(row.recipient_user_id) : null,
+    status: normalizePayoutLedgerStatus(row.status),
+    reference: row.reference ? String(row.reference) : null,
+    metadata: toObject(row.metadata),
     createdAt: String(row.created_at ?? new Date().toISOString()),
     updatedAt: String(row.updated_at ?? new Date().toISOString()),
   };
@@ -604,6 +691,74 @@ export async function transitionTransactionStatus(
   return mapTransactionRow(data);
 }
 
+export async function listTransactionStatusHistory(
+  transactionId: string,
+  options?: { limit?: number },
+): Promise<TransactionStatusHistoryRecord[]> {
+  const normalizedTransactionId = String(transactionId ?? "").trim();
+  if (!normalizedTransactionId) return [];
+
+  const client = getClient();
+  if (!client) {
+    throw new Error("Supabase service client is not configured.");
+  }
+
+  const numericLimit = Number(options?.limit);
+  const limit =
+    Number.isFinite(numericLimit) && numericLimit > 0
+      ? Math.max(1, Math.min(Math.trunc(numericLimit), 200))
+      : 100;
+
+  const { data, error } = await client
+    .from(TX_STATUS_HISTORY_TABLE)
+    .select("id, transaction_id, from_status, to_status, changed_by_user_id, reason, metadata, created_at")
+    .eq("transaction_id", normalizedTransactionId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to list transaction status history: ${error.message}`);
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  return rows.map((row) => mapStatusHistoryRow(row as Record<string, unknown>));
+}
+
+export async function listPayoutLedgerEntries(
+  transactionId: string,
+  options?: { limit?: number },
+): Promise<PayoutLedgerRecord[]> {
+  const normalizedTransactionId = String(transactionId ?? "").trim();
+  if (!normalizedTransactionId) return [];
+
+  const client = getClient();
+  if (!client) {
+    throw new Error("Supabase service client is not configured.");
+  }
+
+  const numericLimit = Number(options?.limit);
+  const limit =
+    Number.isFinite(numericLimit) && numericLimit > 0
+      ? Math.max(1, Math.min(Math.trunc(numericLimit), 200))
+      : 100;
+
+  const { data, error } = await client
+    .from(PAYOUT_LEDGER_TABLE)
+    .select(
+      "id, transaction_id, ledger_type, idempotency_key, amount, currency, recipient_user_id, status, reference, metadata, created_at, updated_at",
+    )
+    .eq("transaction_id", normalizedTransactionId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to list payout ledger entries: ${error.message}`);
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  return rows.map((row) => mapPayoutLedgerRow(row as Record<string, unknown>));
+}
+
 export async function createChatAction(input: CreateChatActionInput): Promise<ChatActionRecord> {
   const transactionId = String(input.transactionId ?? "").trim();
   const conversationId = String(input.conversationId ?? "").trim();
@@ -826,11 +981,125 @@ export async function claimPayoutLedgerEntry(input: ClaimPayoutInput): Promise<{
     throw new Error(`Failed to claim payout ledger entry: ${error.message}`);
   }
 
+  const transaction = await getTransactionById(client, transactionId);
+  await insertStatusHistory(client, {
+    transactionId,
+    fromStatus: transaction.status,
+    toStatus: transaction.status,
+    actorUserId: input.actorUserId,
+    reason: input.reason || `Payout ledger ${input.ledgerType} claimed.`,
+    metadata: {
+      event: "payout_ledger_claimed",
+      ledgerEntryId: String(data?.id ?? ""),
+      ledgerType: input.ledgerType,
+      idempotencyKey,
+      amount,
+      currency: normalizeCurrency(input.currency),
+    },
+  });
+
   return {
     claimed: true,
     idempotencyKey,
     entryId: String(data?.id ?? ""),
   };
+}
+
+export async function updatePayoutLedgerEntryStatus(
+  input: UpdatePayoutLedgerStatusInput,
+): Promise<PayoutLedgerRecord> {
+  const entryId = String(input.entryId ?? "").trim();
+  if (!entryId) {
+    throw new Error("entryId is required.");
+  }
+
+  const client = getClient();
+  if (!client) {
+    throw new Error("Supabase service client is not configured.");
+  }
+
+  const { data: existingRow, error: existingError } = await client
+    .from(PAYOUT_LEDGER_TABLE)
+    .select(
+      "id, transaction_id, ledger_type, idempotency_key, amount, currency, recipient_user_id, status, reference, metadata, created_at, updated_at",
+    )
+    .eq("id", entryId)
+    .maybeSingle<Record<string, unknown>>();
+
+  if (existingError) {
+    throw new Error(`Failed to load payout ledger entry: ${existingError.message}`);
+  }
+  if (!existingRow) {
+    throw new Error("Payout ledger entry not found.");
+  }
+
+  const existing = mapPayoutLedgerRow(existingRow);
+  const nextStatus = normalizePayoutLedgerStatus(input.status);
+  if (existing.status === nextStatus) {
+    return existing;
+  }
+
+  const nowIso = new Date().toISOString();
+  const mergedMetadata = {
+    ...existing.metadata,
+    ...(input.metadata ?? {}),
+  };
+
+  const { data: updatedRow, error: updateError } = await client
+    .from(PAYOUT_LEDGER_TABLE)
+    .update({
+      status: nextStatus,
+      reference: String(input.reference ?? "").trim() || existing.reference,
+      metadata: mergedMetadata,
+      updated_at: nowIso,
+    })
+    .eq("id", entryId)
+    .select(
+      "id, transaction_id, ledger_type, idempotency_key, amount, currency, recipient_user_id, status, reference, metadata, created_at, updated_at",
+    )
+    .maybeSingle<Record<string, unknown>>();
+
+  if (updateError) {
+    throw new Error(`Failed to update payout ledger status: ${updateError.message}`);
+  }
+  if (!updatedRow) {
+    const { data: reloaded, error: reloadError } = await client
+      .from(PAYOUT_LEDGER_TABLE)
+      .select(
+        "id, transaction_id, ledger_type, idempotency_key, amount, currency, recipient_user_id, status, reference, metadata, created_at, updated_at",
+      )
+      .eq("id", entryId)
+      .maybeSingle<Record<string, unknown>>();
+    if (reloadError) {
+      throw new Error(`Payout ledger updated but reload failed: ${reloadError.message}`);
+    }
+    if (!reloaded) {
+      throw new Error("Payout ledger updated but record could not be reloaded.");
+    }
+    return mapPayoutLedgerRow(reloaded);
+  }
+
+  const updated = mapPayoutLedgerRow(updatedRow);
+  const transaction = await getTransactionById(client, updated.transactionId);
+  await insertStatusHistory(client, {
+    transactionId: updated.transactionId,
+    fromStatus: transaction.status,
+    toStatus: transaction.status,
+    actorUserId: input.actorUserId,
+    reason:
+      input.reason ||
+      `Payout ledger ${updated.ledgerType} status updated: ${existing.status} -> ${updated.status}.`,
+    metadata: {
+      event: "payout_ledger_status_updated",
+      ledgerEntryId: updated.id,
+      ledgerType: updated.ledgerType,
+      previousStatus: existing.status,
+      nextStatus: updated.status,
+      reference: updated.reference,
+    },
+  });
+
+  return updated;
 }
 
 export async function upsertTransactionRating(

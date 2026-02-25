@@ -81,13 +81,44 @@ export type AdminDashboardData = {
   };
 };
 
-export async function fetchAdminDashboardData(): Promise<AdminDashboardData> {
-  const response = await fetch("/api/admin/dashboard", { credentials: "include" });
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
+export type AdminDisputeResolutionStatus = "resolved" | "rejected" | "cancelled";
 
+export type AdminOpenDispute = {
+  id: string;
+  transactionId: string;
+  conversationId: string;
+  openedByUserId: string | null;
+  againstUserId: string | null;
+  reason: string;
+  details: string | null;
+  status: "open" | "resolved" | "rejected" | "cancelled";
+  resolution: string | null;
+  resolutionTargetStatus: string | null;
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminServicePdfJob = {
+  id: string;
+  conversationId: string;
+  serviceRequestId: string | null;
+  transactionId: string | null;
+  status: "queued" | "processing" | "completed" | "failed";
+  attemptCount: number;
+  maxAttempts: number;
+  outputBucket: string;
+  outputPath: string | null;
+  errorMessage: string | null;
+  processedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function fetchAdminDashboardData(): Promise<AdminDashboardData> {
+  const response = await apiRequest("GET", "/api/admin/dashboard");
   return response.json();
 }
 
@@ -111,4 +142,62 @@ export async function addAdminFlaggedListingComment(
 ): Promise<AdminFlaggedListingComment> {
   const response = await apiRequest("POST", `/api/admin/flagged-listings/${listingId}/comments`, payload);
   return response.json();
+}
+
+export async function fetchAdminOpenDisputes(options?: {
+  limit?: number;
+}): Promise<AdminOpenDispute[]> {
+  const params = new URLSearchParams();
+  if (typeof options?.limit === "number" && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.max(1, Math.trunc(options.limit))));
+  }
+  const query = params.toString();
+  const response = await apiRequest("GET", `/api/disputes/open${query ? `?${query}` : ""}`);
+  const payload = (await response.json()) as unknown;
+  return Array.isArray(payload) ? (payload as AdminOpenDispute[]) : [];
+}
+
+export async function resolveAdminOpenDispute(
+  disputeId: string,
+  payload: {
+    status: AdminDisputeResolutionStatus;
+    resolution?: string;
+    resolutionTargetStatus?: string;
+    unfreezeEscrow?: boolean;
+  },
+): Promise<{ dispute: AdminOpenDispute; warnings?: string[] }> {
+  const response = await apiRequest(
+    "POST",
+    `/api/disputes/${encodeURIComponent(disputeId)}/resolve`,
+    payload,
+  );
+  return (await response.json()) as { dispute: AdminOpenDispute; warnings?: string[] };
+}
+
+export async function fetchAdminServicePdfJobs(options?: {
+  status?: "queued" | "processing" | "completed" | "failed" | "all";
+  limit?: number;
+}): Promise<AdminServicePdfJob[]> {
+  const params = new URLSearchParams();
+  const status = String(options?.status ?? "all").trim().toLowerCase();
+  if (
+    status === "queued" ||
+    status === "processing" ||
+    status === "completed" ||
+    status === "failed"
+  ) {
+    params.set("status", status);
+  }
+  if (typeof options?.limit === "number" && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.max(1, Math.trunc(options.limit))));
+  }
+  const query = params.toString();
+  const response = await apiRequest("GET", `/api/service-pdf-jobs${query ? `?${query}` : ""}`);
+  const payload = (await response.json()) as unknown;
+  return Array.isArray(payload) ? (payload as AdminServicePdfJob[]) : [];
+}
+
+export async function processNextAdminServicePdfJob(): Promise<{ job: AdminServicePdfJob | null }> {
+  const response = await apiRequest("POST", "/api/service-pdf-jobs/process-next");
+  return (await response.json()) as { job: AdminServicePdfJob | null };
 }
