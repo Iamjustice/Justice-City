@@ -59,6 +59,34 @@ export type TransactionDispute = {
   updatedAt: string;
 };
 
+export type TransactionStatusHistoryItem = {
+  id: string;
+  transactionId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  changedByUserId: string | null;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type PayoutLedgerStatus = "claimed" | "paid" | "failed" | "cancelled";
+
+export type PayoutLedgerEntry = {
+  id: string;
+  transactionId: string;
+  ledgerType: "payout" | "refund" | "commission";
+  idempotencyKey: string;
+  amount: number;
+  currency: string;
+  recipientUserId: string | null;
+  status: PayoutLedgerStatus;
+  reference: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ServicePdfJob = {
   id: string;
   conversationId: string;
@@ -205,6 +233,72 @@ export async function listDisputes(transactionId: string): Promise<TransactionDi
   return (await response.json()) as TransactionDispute[];
 }
 
+export async function listTransactionStatusHistory(
+  transactionId: string,
+  options?: { limit?: number },
+): Promise<TransactionStatusHistoryItem[]> {
+  const params = new URLSearchParams();
+  if (typeof options?.limit === "number" && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.max(1, Math.trunc(options.limit))));
+  }
+
+  const query = params.toString();
+  const response = await fetch(
+    `/api/transactions/${encodeURIComponent(transactionId)}/status-history${query ? `?${query}` : ""}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) {
+    const text = (await response.text()) || response.statusText;
+    throw new Error(`${response.status}: ${text}`);
+  }
+  return (await response.json()) as TransactionStatusHistoryItem[];
+}
+
+export async function listPayoutLedger(
+  transactionId: string,
+  options?: { limit?: number },
+): Promise<PayoutLedgerEntry[]> {
+  const params = new URLSearchParams();
+  if (typeof options?.limit === "number" && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.max(1, Math.trunc(options.limit))));
+  }
+
+  const query = params.toString();
+  const response = await fetch(
+    `/api/transactions/${encodeURIComponent(transactionId)}/payout-ledger${query ? `?${query}` : ""}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) {
+    const text = (await response.text()) || response.statusText;
+    throw new Error(`${response.status}: ${text}`);
+  }
+  return (await response.json()) as PayoutLedgerEntry[];
+}
+
+export async function updatePayoutLedgerStatus(input: {
+  entryId: string;
+  status: PayoutLedgerStatus;
+  actorRole?: string;
+  actorUserId?: string;
+  reason?: string;
+  reference?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<PayoutLedgerEntry> {
+  const response = await apiRequest(
+    "POST",
+    `/api/payout-ledger/${encodeURIComponent(input.entryId)}/status`,
+    {
+      status: input.status,
+      actorRole: input.actorRole,
+      actorUserId: input.actorUserId,
+      reason: input.reason,
+      reference: input.reference,
+      metadata: input.metadata,
+    },
+  );
+  return (await response.json()) as PayoutLedgerEntry;
+}
+
 export async function queueServicePdfJob(input: {
   conversationId: string;
   transactionId?: string;
@@ -282,4 +376,3 @@ export async function fetchProviderPackage(token: string): Promise<ProviderPacka
   }
   return (await response.json()) as ProviderPackage;
 }
-

@@ -32,12 +32,18 @@ import {
 import {
   createProviderLink,
   getTransactionByConversation,
+  listPayoutLedger,
   listServicePdfJobsByConversation,
+  listTransactionStatusHistory,
   openDispute,
   queueServicePdfJob,
   resolveTransactionAction,
+  updatePayoutLedgerStatus,
   upsertTransactionForConversation,
+  type PayoutLedgerEntry,
+  type PayoutLedgerStatus,
   type ServicePdfJob,
+  type TransactionStatusHistoryItem,
   type TransactionAction,
   type TransactionSummary,
 } from "@/lib/transaction-automation";
@@ -197,6 +203,28 @@ function isUuid(value: string | undefined): boolean {
   );
 }
 
+function formatAmount(amount: number, currency: string): string {
+  const normalizedCurrency = String(currency || "NGN")
+    .trim()
+    .toUpperCase();
+  try {
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: normalizedCurrency,
+      maximumFractionDigits: 2,
+    }).format(Number.isFinite(amount) ? amount : 0);
+  } catch {
+    return `${normalizedCurrency} ${Number.isFinite(amount) ? amount.toFixed(2) : "0.00"}`;
+  }
+}
+
+function payoutStatusBadgeClass(status: PayoutLedgerStatus): string {
+  if (status === "paid") return "bg-green-100 text-green-700 border-green-200";
+  if (status === "failed") return "bg-red-100 text-red-700 border-red-200";
+  if (status === "cancelled") return "bg-slate-200 text-slate-700 border-slate-300";
+  return "bg-amber-100 text-amber-700 border-amber-200";
+}
+
 export function ChatInterface({
   recipient,
   propertyTitle,
@@ -228,6 +256,11 @@ export function ChatInterface({
   const [isResolvingActionId, setIsResolvingActionId] = useState<string | null>(null);
   const [isQueueingPdf, setIsQueueingPdf] = useState(false);
   const [latestPdfJob, setLatestPdfJob] = useState<ServicePdfJob | null>(null);
+  const [statusHistory, setStatusHistory] = useState<TransactionStatusHistoryItem[]>([]);
+  const [payoutLedgerEntries, setPayoutLedgerEntries] = useState<PayoutLedgerEntry[]>([]);
+  const [isLoadingTransactionAudit, setIsLoadingTransactionAudit] = useState(false);
+  const [transactionAuditError, setTransactionAuditError] = useState<string | null>(null);
+  const [payoutStatusActionId, setPayoutStatusActionId] = useState<string | null>(null);
   const [providerUserId, setProviderUserId] = useState("");
   const [providerLinkUrl, setProviderLinkUrl] = useState("");
   const [isCreatingProviderLink, setIsCreatingProviderLink] = useState(false);
@@ -348,6 +381,39 @@ export function ChatInterface({
     setConversationFiles(Array.isArray(files) ? files : []);
   };
 
+  const refreshTransactionAudit = async (
+    targetTransactionId: string,
+    options?: { silent?: boolean },
+  ): Promise<void> => {
+    if (!targetTransactionId) {
+      setStatusHistory([]);
+      setPayoutLedgerEntries([]);
+      setTransactionAuditError(null);
+      return;
+    }
+
+    const isSilent = options?.silent === true;
+    if (!isSilent) setIsLoadingTransactionAudit(true);
+
+    try {
+      const [historyRows, payoutRows] = await Promise.all([
+        listTransactionStatusHistory(targetTransactionId, { limit: 80 }),
+        listPayoutLedger(targetTransactionId, { limit: 80 }),
+      ]);
+      setStatusHistory(Array.isArray(historyRows) ? historyRows : []);
+      setPayoutLedgerEntries(Array.isArray(payoutRows) ? payoutRows : []);
+      setTransactionAuditError(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to load transaction timeline.";
+      setStatusHistory([]);
+      setPayoutLedgerEntries([]);
+      setTransactionAuditError(message);
+    } finally {
+      if (!isSilent) setIsLoadingTransactionAudit(false);
+    }
+  };
+
   useEffect(() => {
     let active = true;
 
@@ -391,6 +457,9 @@ export function ChatInterface({
       if (!conversationId || isLocalFallback) {
         setTransaction(null);
         setLatestPdfJob(null);
+        setStatusHistory([]);
+        setPayoutLedgerEntries([]);
+        setTransactionAuditError(null);
         return;
       }
 
@@ -412,9 +481,19 @@ export function ChatInterface({
 
         if (!active) return;
         setTransaction(resolvedTransaction);
+        if (resolvedTransaction?.id) {
+          await refreshTransactionAudit(resolvedTransaction.id);
+        } else {
+          setStatusHistory([]);
+          setPayoutLedgerEntries([]);
+          setTransactionAuditError(null);
+        }
       } catch {
         if (!active) return;
         setTransaction(null);
+        setStatusHistory([]);
+        setPayoutLedgerEntries([]);
+        setTransactionAuditError(null);
       }
 
       if (conversationScope === "service") {
@@ -554,6 +633,9 @@ export function ChatInterface({
         decision,
       });
       setTransaction(result.transaction);
+      if (result.transaction?.id) {
+        await refreshTransactionAudit(result.transaction.id, { silent: true });
+      }
       if (conversationId) {
         await refreshMessages(conversationId, resolvedSenderId || resolvedRequester.id);
       }
@@ -670,6 +752,9 @@ export function ChatInterface({
       });
       const refreshed = await getTransactionByConversation(conversationId);
       setTransaction(refreshed);
+      if (refreshed?.id) {
+        await refreshTransactionAudit(refreshed.id, { silent: true });
+      }
       await refreshMessages(conversationId, resolvedSenderId || resolvedRequester.id);
       toast({
         title: "Dispute opened",
@@ -688,6 +773,43 @@ export function ChatInterface({
     }
   };
 
+  const handleUpdatePayoutLedgerStatus = async (
+    entry: PayoutLedgerEntry,
+    nextStatus: PayoutLedgerStatus,
+  ) => {
+    if (!user?.id) return;
+    setPayoutStatusActionId(entry.id);
+    setLoadError(null);
+    try {
+      const updated = await updatePayoutLedgerStatus({
+        entryId: entry.id,
+        status: nextStatus,
+        actorRole: user.role ?? undefined,
+        actorUserId: user.id,
+      });
+      setPayoutLedgerEntries((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      if (transaction?.id) {
+        await refreshTransactionAudit(transaction.id, { silent: true });
+      }
+      toast({
+        title: "Payout ledger updated",
+        description: `Entry marked ${nextStatus}.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update payout ledger status.";
+      setLoadError(message);
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setPayoutStatusActionId(null);
+    }
+  };
+
   const canUseServiceAutomationTools =
     conversationScope === "service" &&
     Boolean(conversationId) &&
@@ -700,6 +822,11 @@ export function ChatInterface({
     transaction?.status !== "completed" &&
     transaction?.status !== "closed" &&
     transaction?.status !== "cancelled";
+
+  const canManagePayoutLedger =
+    Boolean(transaction?.id) &&
+    !isLocalFallback &&
+    ["admin", "support"].includes(normalizeUserRole(user?.role));
 
   return (
     <div className="flex flex-col h-[500px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
@@ -840,6 +967,106 @@ export function ChatInterface({
                         </a>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            )}
+            {(isLoadingTransactionAudit ||
+              statusHistory.length > 0 ||
+              payoutLedgerEntries.length > 0 ||
+              transactionAuditError) && (
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Transaction Timeline
+                  </p>
+                  {isLoadingTransactionAudit && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Syncing...
+                    </span>
+                  )}
+                </div>
+                {transactionAuditError && (
+                  <p className="mt-2 text-xs text-amber-700">{transactionAuditError}</p>
+                )}
+                {!isLoadingTransactionAudit && statusHistory.length === 0 && !transactionAuditError && (
+                  <p className="mt-2 text-xs text-slate-500">No transaction timeline events yet.</p>
+                )}
+                {statusHistory.length > 0 && (
+                  <div className="mt-2 grid gap-2">
+                    {statusHistory.slice(0, 6).map((event) => (
+                      <div
+                        key={event.id}
+                        className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs"
+                      >
+                        <p className="font-medium text-slate-800">
+                          {event.fromStatus && event.fromStatus !== event.toStatus
+                            ? `${event.fromStatus} -> ${event.toStatus}`
+                            : event.toStatus}
+                        </p>
+                        {event.reason && <p className="text-slate-600">{event.reason}</p>}
+                        <p className="text-[10px] text-slate-500">
+                          {new Date(event.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(payoutLedgerEntries.length > 0 || canManagePayoutLedger) && (
+                  <div className="mt-3 border-t border-slate-100 pt-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Payout Ledger
+                    </p>
+                    {payoutLedgerEntries.length === 0 && !isLoadingTransactionAudit ? (
+                      <p className="mt-2 text-xs text-slate-500">No payout ledger entries yet.</p>
+                    ) : (
+                      <div className="mt-2 grid gap-2">
+                        {payoutLedgerEntries.slice(0, 6).map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-xs"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="font-medium text-slate-800">
+                                {entry.ledgerType.replace(/_/g, " ")} -{" "}
+                                {formatAmount(entry.amount, entry.currency)}
+                              </p>
+                              <span
+                                className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${payoutStatusBadgeClass(
+                                  entry.status,
+                                )}`}
+                              >
+                                {entry.status}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              {new Date(entry.createdAt).toLocaleString()}
+                              {entry.reference ? `  |  Ref: ${entry.reference}` : ""}
+                            </p>
+                            {canManagePayoutLedger && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {(["paid", "failed", "cancelled"] as const).map((nextStatus) => (
+                                  <Button
+                                    key={`${entry.id}-${nextStatus}`}
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-[10px]"
+                                    disabled={
+                                      payoutStatusActionId === entry.id || entry.status === nextStatus
+                                    }
+                                    onClick={() => void handleUpdatePayoutLedgerStatus(entry, nextStatus)}
+                                  >
+                                    {nextStatus}
+                                  </Button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

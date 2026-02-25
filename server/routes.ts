@@ -65,9 +65,12 @@ import {
   ensureUserExistsForOtp,
   getTransactionByConversationId,
   getTransactionByIdPublic,
+  listPayoutLedgerEntries,
+  listTransactionStatusHistory,
   listTransactionActions,
   resolveChatAction,
   transitionTransactionStatus,
+  updatePayoutLedgerEntryStatus,
   upsertTransaction,
   upsertTransactionRating,
   type AppRole,
@@ -3923,6 +3926,42 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/transactions/:transactionId/status-history", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      if (!transactionId) {
+        return res.status(400).json({ message: "transactionId is required." });
+      }
+
+      const limit = Number(req.query?.limit);
+      const history = await listTransactionStatusHistory(transactionId, {
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(history);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load status history.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/transactions/:transactionId/payout-ledger", async (req: Request, res: Response) => {
+    try {
+      const transactionId = String(req.params?.transactionId ?? "").trim();
+      if (!transactionId) {
+        return res.status(400).json({ message: "transactionId is required." });
+      }
+
+      const limit = Number(req.query?.limit);
+      const entries = await listPayoutLedgerEntries(transactionId, {
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return res.status(200).json(entries);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load payout ledger entries.";
+      return res.status(502).json({ message });
+    }
+  });
+
   app.get("/api/transactions/:transactionId/actions", async (req: Request, res: Response) => {
     try {
       const transactionId = String(req.params?.transactionId ?? "").trim();
@@ -4233,6 +4272,7 @@ export async function registerRoutes(
       const idempotencyKey = String(req.body?.idempotencyKey ?? "").trim();
       const amount = Number(req.body?.amount);
       const ledgerType = String(req.body?.ledgerType ?? "payout").trim().toLowerCase();
+      const actorUserId = String(req.body?.actorUserId ?? "").trim();
       if (!transactionId || !idempotencyKey || !Number.isFinite(amount)) {
         return res.status(400).json({
           message: "transactionId, idempotencyKey, and numeric amount are required.",
@@ -4247,6 +4287,8 @@ export async function registerRoutes(
         currency: String(req.body?.currency ?? "").trim() || undefined,
         recipientUserId: String(req.body?.recipientUserId ?? "").trim() || undefined,
         reference: String(req.body?.reference ?? "").trim() || undefined,
+        actorUserId: actorUserId || undefined,
+        reason: String(req.body?.reason ?? "").trim() || undefined,
         metadata:
           req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
             ? (req.body.metadata as Record<string, unknown>)
@@ -4256,6 +4298,47 @@ export async function registerRoutes(
       return res.status(200).json(claim);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to claim payout ledger entry.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/payout-ledger/:entryId/status", async (req: Request, res: Response) => {
+    try {
+      const entryId = String(req.params?.entryId ?? "").trim();
+      const statusRaw = String(req.body?.status ?? "").trim().toLowerCase();
+      const actorRole = normalizeActionRole(req.body?.actorRole);
+      if (!entryId || !statusRaw) {
+        return res.status(400).json({ message: "entryId and status are required." });
+      }
+
+      if (actorRole !== "admin" && actorRole !== "support") {
+        return res.status(403).json({ message: "Only admin/support can update payout ledger status." });
+      }
+
+      if (
+        statusRaw !== "claimed" &&
+        statusRaw !== "paid" &&
+        statusRaw !== "failed" &&
+        statusRaw !== "cancelled"
+      ) {
+        return res.status(400).json({ message: "status must be one of: claimed, paid, failed, cancelled." });
+      }
+
+      const updated = await updatePayoutLedgerEntryStatus({
+        entryId,
+        status: statusRaw as "claimed" | "paid" | "failed" | "cancelled",
+        actorUserId: String(req.body?.actorUserId ?? "").trim() || undefined,
+        reason: String(req.body?.reason ?? "").trim() || undefined,
+        reference: String(req.body?.reference ?? "").trim() || undefined,
+        metadata:
+          req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
+            ? (req.body.metadata as Record<string, unknown>)
+            : undefined,
+      });
+
+      return res.status(200).json(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update payout ledger status.";
       return res.status(502).json({ message });
     }
   });
