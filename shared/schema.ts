@@ -38,6 +38,18 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const agentProfiles = pgTable("agent_profiles", {
+  userId: uuid("user_id").notNull().primaryKey(),
+  displayName: text("display_name"),
+  bio: text("bio"),
+  salesRating: numeric("sales_rating", { precision: 3, scale: 2 }).notNull().default("0"),
+  reviewCount: integer("review_count").notNull().default(0),
+  recentDealsCount: integer("recent_deals_count").notNull().default(0),
+  closedDealsCount: integer("closed_deals_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const listings = pgTable("listings", {
   id: uuid("id").defaultRandom().primaryKey(),
   listingCode: text("listing_code"),

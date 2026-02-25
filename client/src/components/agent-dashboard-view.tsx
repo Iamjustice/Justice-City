@@ -41,6 +41,11 @@ import { ChatInterface } from "@/components/chat-interface";
 import { useToast } from "@/hooks/use-toast";
 import { fetchUserConversations, type ChatConversation } from "@/lib/chat";
 import {
+  fetchAgentProfile,
+  updateAgentProfile,
+  type AgentDashboardProfile,
+} from "@/lib/agent-profiles";
+import {
   deleteAgentListing as deleteAgentListingApi,
   fetchAgentListings,
   updateAgentListing as updateAgentListingApi,
@@ -230,6 +235,15 @@ export default function ModernAgentDashboardView({
     status: "Draft",
     description: "",
   });
+  const [agentProfile, setAgentProfile] = useState<AgentDashboardProfile | null>(null);
+  const [isLoadingAgentProfile, setIsLoadingAgentProfile] = useState(false);
+  const [agentProfileError, setAgentProfileError] = useState<string | null>(null);
+  const [isEditingAgentProfile, setIsEditingAgentProfile] = useState(false);
+  const [isSavingAgentProfile, setIsSavingAgentProfile] = useState(false);
+  const [agentProfileForm, setAgentProfileForm] = useState({
+    displayName: "",
+    bio: "",
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -295,6 +309,46 @@ export default function ModernAgentDashboardView({
   }, [onListingsChange, user?.id, user?.name, user?.role]);
 
   useEffect(() => {
+    let mounted = true;
+    if (!viewerId) {
+      setAgentProfile(null);
+      setAgentProfileError(null);
+      setIsLoadingAgentProfile(false);
+      return undefined;
+    }
+
+    setIsLoadingAgentProfile(true);
+    setAgentProfileError(null);
+
+    void fetchAgentProfile(viewerId)
+      .then((profile) => {
+        if (!mounted) return;
+        setAgentProfile(profile);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : "Failed to load profile metrics.";
+        setAgentProfileError(message);
+        setAgentProfile(null);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setIsLoadingAgentProfile(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [viewerId]);
+
+  useEffect(() => {
+    setAgentProfileForm({
+      displayName: String(agentProfile?.displayName ?? user?.name ?? "").trim(),
+      bio: String(agentProfile?.bio ?? "").trim(),
+    });
+  }, [agentProfile, user?.name]);
+
+  useEffect(() => {
     if (selectedListing) {
       const next = listings.find((item: any) => item.id === selectedListing.id);
       setSelectedListing(next ?? null);
@@ -318,6 +372,50 @@ export default function ModernAgentDashboardView({
       if (index === -1) return [updatedListing, ...current];
       return current.map((item: any) => (item.id === updatedListing.id ? updatedListing : item));
     });
+  };
+
+  const profileDisplayName =
+    String(agentProfile?.displayName ?? user?.name ?? "").trim() || "Unnamed profile";
+  const profileBio = String(agentProfile?.bio ?? "").trim();
+  const profileSalesRating =
+    typeof agentProfile?.salesRating === "number" && Number.isFinite(agentProfile.salesRating)
+      ? agentProfile.salesRating
+      : 0;
+  const profileReviewCount =
+    typeof agentProfile?.reviewCount === "number" ? Math.max(0, agentProfile.reviewCount) : 0;
+  const profileRecentDealsCount =
+    typeof agentProfile?.recentDealsCount === "number"
+      ? Math.max(0, agentProfile.recentDealsCount)
+      : 0;
+  const profileClosedDealsCount =
+    typeof agentProfile?.closedDealsCount === "number"
+      ? Math.max(0, agentProfile.closedDealsCount)
+      : 0;
+
+  const saveAgentProfile = async () => {
+    if (!viewerId) return;
+    setIsSavingAgentProfile(true);
+    try {
+      const updated = await updateAgentProfile(viewerId, {
+        displayName: agentProfileForm.displayName,
+        bio: agentProfileForm.bio,
+      });
+      setAgentProfile(updated);
+      setIsEditingAgentProfile(false);
+      toast({
+        title: "Profile updated",
+        description: "Dashboard profile metrics are now synced.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update profile.";
+      toast({
+        title: "Profile update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingAgentProfile(false);
+    }
   };
 
   const closedDeals = useMemo(
@@ -1206,6 +1304,90 @@ export default function ModernAgentDashboardView({
             <Plus className="w-5 h-5" />
             Create New Listing
           </Button>
+        </div>
+      </div>
+
+      <div className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Profile Metrics</p>
+            {isEditingAgentProfile ? (
+              <div className="mt-3 space-y-3 max-w-2xl">
+                <Input
+                  value={agentProfileForm.displayName}
+                  onChange={(event) =>
+                    setAgentProfileForm((current) => ({ ...current, displayName: event.target.value }))
+                  }
+                  placeholder="Display name"
+                />
+                <textarea
+                  value={agentProfileForm.bio}
+                  onChange={(event) =>
+                    setAgentProfileForm((current) => ({ ...current, bio: event.target.value }))
+                  }
+                  className="w-full min-h-[92px] rounded-md border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="Short bio"
+                />
+              </div>
+            ) : (
+              <div className="mt-3 space-y-2">
+                <p className="text-xl font-semibold text-slate-900">{profileDisplayName}</p>
+                <p className="text-sm text-slate-600">
+                  {profileBio || "No bio added yet. Add a short profile summary."}
+                </p>
+              </div>
+            )}
+            {isLoadingAgentProfile && (
+              <p className="mt-2 text-xs text-slate-500">Loading profile metrics...</p>
+            )}
+            {agentProfileError && (
+              <p className="mt-2 text-xs text-amber-600">Profile sync issue: {agentProfileError}</p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Sales Rating</p>
+              <p className="text-lg font-semibold text-slate-900">{profileSalesRating.toFixed(2)}</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Reviews</p>
+              <p className="text-lg font-semibold text-slate-900">{profileReviewCount}</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Recent Deals</p>
+              <p className="text-lg font-semibold text-slate-900">{profileRecentDealsCount}</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Closed Deals</p>
+              <p className="text-lg font-semibold text-slate-900">{profileClosedDealsCount}</p>
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          {isEditingAgentProfile ? (
+            <>
+              <Button
+                variant="outline"
+                disabled={isSavingAgentProfile}
+                onClick={() => {
+                  setIsEditingAgentProfile(false);
+                  setAgentProfileForm({
+                    displayName: String(agentProfile?.displayName ?? user?.name ?? "").trim(),
+                    bio: String(agentProfile?.bio ?? "").trim(),
+                  });
+                }}
+              >
+                Cancel
+              </Button>
+              <Button disabled={isSavingAgentProfile} onClick={() => void saveAgentProfile()}>
+                {isSavingAgentProfile ? "Saving..." : "Save Profile"}
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => setIsEditingAgentProfile(true)}>
+              Edit Profile Summary
+            </Button>
+          )}
         </div>
       </div>
 

@@ -1,4 +1,41 @@
+import { apiRequest } from "@/lib/queryClient";
 import { type Property, MOCK_PROPERTIES } from "@/lib/mock-data";
+
+export type AgentDashboardProfile = {
+  userId: string;
+  displayName?: string;
+  bio?: string;
+  salesRating: number;
+  reviewCount: number;
+  recentDealsCount: number;
+  closedDealsCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export async function fetchAgentProfile(userId: string): Promise<AgentDashboardProfile> {
+  const response = await apiRequest("GET", `/api/agent-profiles/${encodeURIComponent(userId)}`);
+  return response.json();
+}
+
+export async function updateAgentProfile(
+  userId: string,
+  input: { displayName?: string; bio?: string },
+): Promise<AgentDashboardProfile> {
+  const payload: Record<string, unknown> = {};
+  if (typeof input.displayName === "string") {
+    payload.displayName = input.displayName;
+  }
+  if (typeof input.bio === "string") {
+    payload.bio = input.bio;
+  }
+  const response = await apiRequest(
+    "PATCH",
+    `/api/agent-profiles/${encodeURIComponent(userId)}`,
+    payload,
+  );
+  return response.json();
+}
 
 export type AgentPublicProfile = {
   name: string;
