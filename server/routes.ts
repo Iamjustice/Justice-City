@@ -104,6 +104,7 @@ const LISTING_IMAGES_TABLE = process.env.SUPABASE_LISTING_IMAGES_TABLE || "listi
 const LISTING_DOCUMENTS_TABLE = process.env.SUPABASE_LISTING_DOCUMENTS_TABLE || "listing_documents";
 const AGENT_PROFILES_TABLE = process.env.SUPABASE_AGENT_PROFILES_TABLE || "agent_profiles";
 const UTILITY_BILLS_TABLE = process.env.SUPABASE_UTILITY_BILLS_TABLE || "utility_bills";
+const PROPERTY_EXPENSES_TABLE = process.env.SUPABASE_PROPERTY_EXPENSES_TABLE || "property_expenses";
 const PROPERTY_IMAGES_BUCKET = process.env.SUPABASE_PROPERTY_IMAGES_BUCKET || "property-images";
 const PROPERTY_DOCUMENTS_BUCKET =
   process.env.SUPABASE_PROPERTY_DOCUMENTS_BUCKET || "property-documents";
@@ -651,6 +652,16 @@ function canAccessUtilityBillRow(actor: AuthenticatedActor, row: UtilityBillRow)
   return ownerUserId === actor.userId || renterUserId === actor.userId;
 }
 
+function canUsePropertyExpenses(role: AppUserRole): boolean {
+  return role === "admin" || role === "owner";
+}
+
+function canAccessPropertyExpenseRow(actor: AuthenticatedActor, row: PropertyExpenseRow): boolean {
+  if (actor.role === "admin") return true;
+  const ownerUserId = String(row.owner_user_id ?? "").trim();
+  return ownerUserId === actor.userId;
+}
+
 type AgentProfileRow = {
   user_id: string;
   display_name?: string | null;
@@ -892,6 +903,82 @@ function mapUtilityBillRow(row: UtilityBillRow): UtilityBillRecord {
     billingPeriodEnd: String(row.billing_period_end ?? "").trim() || undefined,
     dueDate: String(row.due_date ?? "").trim() || undefined,
     status: fromUtilityBillDbStatus(row.status),
+    notes: String(row.notes ?? "").trim() || undefined,
+    createdAt: String(row.created_at ?? "").trim() || undefined,
+    updatedAt: String(row.updated_at ?? "").trim() || undefined,
+  };
+}
+
+type PropertyExpenseDbCategory =
+  | "maintenance"
+  | "repairs"
+  | "taxes"
+  | "utilities"
+  | "security"
+  | "other";
+
+type PropertyExpenseCategory =
+  | "Maintenance"
+  | "Repairs"
+  | "Taxes"
+  | "Utilities"
+  | "Security"
+  | "Other";
+
+type PropertyExpenseRow = {
+  id: string;
+  listing_id?: string | null;
+  owner_user_id?: string | null;
+  category?: string | null;
+  amount?: number | string | null;
+  expense_date?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type PropertyExpenseRecord = {
+  id: string;
+  listingId?: string;
+  ownerUserId?: string;
+  category: PropertyExpenseCategory;
+  amount: number;
+  expenseDate?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+function toPropertyExpenseDbCategory(rawValue: unknown): PropertyExpenseDbCategory {
+  const value = String(rawValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "maintenance") return "maintenance";
+  if (value === "repairs") return "repairs";
+  if (value === "taxes") return "taxes";
+  if (value === "utilities") return "utilities";
+  if (value === "security") return "security";
+  return "other";
+}
+
+function fromPropertyExpenseDbCategory(rawValue: unknown): PropertyExpenseCategory {
+  const value = toPropertyExpenseDbCategory(rawValue);
+  if (value === "maintenance") return "Maintenance";
+  if (value === "repairs") return "Repairs";
+  if (value === "taxes") return "Taxes";
+  if (value === "utilities") return "Utilities";
+  if (value === "security") return "Security";
+  return "Other";
+}
+
+function mapPropertyExpenseRow(row: PropertyExpenseRow): PropertyExpenseRecord {
+  return {
+    id: String(row.id ?? "").trim(),
+    listingId: String(row.listing_id ?? "").trim() || undefined,
+    ownerUserId: String(row.owner_user_id ?? "").trim() || undefined,
+    category: fromPropertyExpenseDbCategory(row.category),
+    amount: Math.max(0, toNumber(row.amount, 0)),
+    expenseDate: String(row.expense_date ?? "").trim() || undefined,
     notes: String(row.notes ?? "").trim() || undefined,
     createdAt: String(row.created_at ?? "").trim() || undefined,
     updatedAt: String(row.updated_at ?? "").trim() || undefined,
@@ -2408,6 +2495,269 @@ export async function registerRoutes(
       return res.status(200).json({ ok: true, billId });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to delete utility bill.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/property-expenses", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUsePropertyExpenses(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/admin can access property expenses." });
+      }
+
+      const listingIdFilter = String(req.query?.listingId ?? "").trim();
+      const categoryFilterRaw = String(req.query?.category ?? "").trim();
+      const ownerUserIdFilter = String(req.query?.ownerUserId ?? "").trim();
+      const fromDate = String(req.query?.fromDate ?? "").trim();
+      const toDate = String(req.query?.toDate ?? "").trim();
+      const categoryFilter = categoryFilterRaw ? toPropertyExpenseDbCategory(categoryFilterRaw) : "";
+
+      let query = client
+        .from(PROPERTY_EXPENSES_TABLE)
+        .select("id, listing_id, owner_user_id, category, amount, expense_date, notes, created_at, updated_at")
+        .order("expense_date", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (authActor.role === "admin") {
+        if (listingIdFilter) query = query.eq("listing_id", listingIdFilter);
+        if (categoryFilter) query = query.eq("category", categoryFilter);
+        if (ownerUserIdFilter) query = query.eq("owner_user_id", ownerUserIdFilter);
+      } else {
+        query = query.eq("owner_user_id", authActor.userId);
+        if (listingIdFilter) query = query.eq("listing_id", listingIdFilter);
+        if (categoryFilter) query = query.eq("category", categoryFilter);
+      }
+      if (fromDate) query = query.gte("expense_date", fromDate);
+      if (toDate) query = query.lte("expense_date", toDate);
+
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "Property expenses schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+
+      const rows = (Array.isArray(data) ? data : []) as PropertyExpenseRow[];
+      const visibleRows =
+        authActor.role === "admin"
+          ? rows
+          : rows.filter((row) => canAccessPropertyExpenseRow(authActor, row));
+      return res.status(200).json(visibleRows.map((row) => mapPropertyExpenseRow(row)));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load property expenses.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/property-expenses", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUsePropertyExpenses(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/admin can create property expenses." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const listingId = String(body.listingId ?? "").trim() || null;
+      const category = toPropertyExpenseDbCategory(body.category);
+      const amount = Number(body.amount);
+      const expenseDate = String(body.expenseDate ?? "").trim() || new Date().toISOString().slice(0, 10);
+      const notes = String(body.notes ?? "").trim() || null;
+
+      if (!Number.isFinite(amount) || amount < 0) {
+        return res.status(400).json({ message: "amount must be a non-negative number." });
+      }
+
+      const ownerUserIdInput = String(body.ownerUserId ?? "").trim();
+      const ownerUserId =
+        authActor.role === "admin" ? ownerUserIdInput || null : authActor.userId;
+      if (!ownerUserId) {
+        return res.status(400).json({ message: "ownerUserId is required." });
+      }
+
+      const { data, error } = await client
+        .from(PROPERTY_EXPENSES_TABLE)
+        .insert({
+          listing_id: listingId,
+          owner_user_id: ownerUserId,
+          category,
+          amount,
+          expense_date: expenseDate,
+          notes,
+        })
+        .select("id, listing_id, owner_user_id, category, amount, expense_date, notes, created_at, updated_at")
+        .maybeSingle<PropertyExpenseRow>();
+
+      if (error) {
+        if (isMissingTableOrColumnError(error)) {
+          return res.status(503).json({
+            message:
+              "Property expenses schema is not configured yet. Run supabase/agent_roles_listings_storage.sql.",
+          });
+        }
+        throw error;
+      }
+      if (!data) {
+        return res.status(502).json({ message: "Failed to create property expense." });
+      }
+
+      return res.status(201).json(mapPropertyExpenseRow(data));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create property expense.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.patch("/api/property-expenses/:expenseId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUsePropertyExpenses(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/admin can update property expenses." });
+      }
+
+      const expenseId = String(req.params.expenseId ?? "").trim();
+      if (!expenseId) {
+        return res.status(400).json({ message: "expenseId is required." });
+      }
+
+      const { data: existing, error: existingError } = await client
+        .from(PROPERTY_EXPENSES_TABLE)
+        .select("id, listing_id, owner_user_id, category, amount, expense_date, notes, created_at, updated_at")
+        .eq("id", expenseId)
+        .maybeSingle<PropertyExpenseRow>();
+
+      if (existingError) {
+        throw existingError;
+      }
+      if (!existing) {
+        return res.status(404).json({ message: "Property expense not found." });
+      }
+      if (!canAccessPropertyExpenseRow(authActor, existing)) {
+        return res.status(403).json({ message: "You cannot update this property expense." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const updates: Record<string, unknown> = {};
+      if (typeof body.category === "string") {
+        updates.category = toPropertyExpenseDbCategory(body.category);
+      }
+      if (body.amount !== undefined) {
+        const amount = Number(body.amount);
+        if (!Number.isFinite(amount) || amount < 0) {
+          return res.status(400).json({ message: "amount must be a non-negative number." });
+        }
+        updates.amount = amount;
+      }
+      if (typeof body.expenseDate === "string") {
+        updates.expense_date = body.expenseDate.trim() || null;
+      }
+      if (typeof body.notes === "string") {
+        updates.notes = body.notes.trim() || null;
+      }
+      if (typeof body.listingId === "string") {
+        updates.listing_id = body.listingId.trim() || null;
+      }
+      if (authActor.role === "admin" && typeof body.ownerUserId === "string") {
+        updates.owner_user_id = body.ownerUserId.trim() || null;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(200).json(mapPropertyExpenseRow(existing));
+      }
+
+      const { data, error } = await client
+        .from(PROPERTY_EXPENSES_TABLE)
+        .update(updates)
+        .eq("id", expenseId)
+        .select("id, listing_id, owner_user_id, category, amount, expense_date, notes, created_at, updated_at")
+        .maybeSingle<PropertyExpenseRow>();
+
+      if (error) {
+        throw error;
+      }
+      if (!data) {
+        return res.status(502).json({ message: "Failed to update property expense." });
+      }
+
+      return res.status(200).json(mapPropertyExpenseRow(data));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update property expense.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.delete("/api/property-expenses/:expenseId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+      if (!canUsePropertyExpenses(authActor.role)) {
+        return res.status(403).json({ message: "Only owner/admin can delete property expenses." });
+      }
+
+      const expenseId = String(req.params.expenseId ?? "").trim();
+      if (!expenseId) {
+        return res.status(400).json({ message: "expenseId is required." });
+      }
+
+      const { data: existing, error: existingError } = await client
+        .from(PROPERTY_EXPENSES_TABLE)
+        .select("id, owner_user_id")
+        .eq("id", expenseId)
+        .maybeSingle<PropertyExpenseRow>();
+
+      if (existingError) {
+        throw existingError;
+      }
+      if (!existing) {
+        return res.status(404).json({ message: "Property expense not found." });
+      }
+      if (!canAccessPropertyExpenseRow(authActor, existing)) {
+        return res.status(403).json({ message: "You cannot delete this property expense." });
+      }
+
+      const { error } = await client.from(PROPERTY_EXPENSES_TABLE).delete().eq("id", expenseId);
+      if (error) {
+        throw error;
+      }
+
+      return res.status(200).json({ ok: true, expenseId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete property expense.";
       return res.status(502).json({ message });
     }
   });
