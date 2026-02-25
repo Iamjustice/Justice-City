@@ -7,6 +7,7 @@ workflows:
       node: 22
     scripts:
       - npm ci
+      - npm run ci:contract
       - npm run check
       - npm run build
     artifacts:
@@ -21,6 +22,7 @@ workflows:
       java: 17
     scripts:
       - npm ci
+      - npm run ci:contract
       - npm run check
       - npm run build
       - npm i --no-save @capacitor/cli @capacitor/core @capacitor/android
@@ -41,6 +43,7 @@ workflows:
       cocoapods: default
     scripts:
       - npm ci
+      - npm run ci:contract
       - npm run check
       - npm run build
       - npm i --no-save @capacitor/cli @capacitor/core @capacitor/ios
