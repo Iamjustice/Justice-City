@@ -1,5 +1,6 @@
 import {
   boolean,
+  date,
   integer,
   jsonb,
   numeric,
@@ -246,6 +247,22 @@ export const serviceProviderLinks = pgTable("service_provider_links", {
   openedAt: timestamp("opened_at", { withTimezone: true }),
   payload: jsonb("payload").notNull().default({}),
   createdByUserId: uuid("created_by_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const utilityBills = pgTable("utility_bills", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  listingId: uuid("listing_id"),
+  ownerUserId: uuid("owner_user_id"),
+  renterUserId: uuid("renter_user_id"),
+  billType: text("bill_type").notNull(),
+  amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  billingPeriodStart: date("billing_period_start"),
+  billingPeriodEnd: date("billing_period_end"),
+  dueDate: date("due_date"),
+  status: text("status").notNull().default("pending"),
+  notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

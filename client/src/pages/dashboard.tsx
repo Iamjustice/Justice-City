@@ -32,7 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link, useLocation } from "wouter";
 import { ChatInterface } from "@/components/chat-interface";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { VerificationModal } from "@/components/verification-modal";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,6 +53,12 @@ import { PropertyCard } from "@/components/property-card";
 import ModernAdminDashboardView from "@/components/admin-dashboard-view";
 import ModernAgentDashboardView from "@/components/agent-dashboard-view";
 import { createAgentListing, uploadAgentListingAssets } from "@/lib/agent-listings";
+import {
+  fetchUtilityBills,
+  updateUtilityBill,
+  type UtilityBill,
+  type UtilityBillStatus,
+} from "@/lib/utility-bills";
 
 export default function Dashboard() {
   const { user, isLoading } = useAuth();
@@ -1966,6 +1972,110 @@ function SellerDashboardView({ listings, handleCreateListing, user }: any) {
 }
 
 function BuyerDashboardView({ user, savedProperties }: any) {
+  const { toast } = useToast();
+  const isRenter = String(user?.role ?? "").trim().toLowerCase() === "renter";
+  const [utilityBills, setUtilityBills] = useState<UtilityBill[]>([]);
+  const [isLoadingUtilityBills, setIsLoadingUtilityBills] = useState(false);
+  const [utilityBillsError, setUtilityBillsError] = useState<string | null>(null);
+  const [utilityBillActionId, setUtilityBillActionId] = useState<string | null>(null);
+
+  const refreshUtilityBills = async () => {
+    if (!isRenter) return;
+    setIsLoadingUtilityBills(true);
+    setUtilityBillsError(null);
+    try {
+      const rows = await fetchUtilityBills();
+      setUtilityBills(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load utility bills.";
+      setUtilityBillsError(message);
+      setUtilityBills([]);
+    } finally {
+      setIsLoadingUtilityBills(false);
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    if (!isRenter) {
+      setUtilityBills([]);
+      setUtilityBillsError(null);
+      setIsLoadingUtilityBills(false);
+      return undefined;
+    }
+
+    setIsLoadingUtilityBills(true);
+    setUtilityBillsError(null);
+    void fetchUtilityBills()
+      .then((rows) => {
+        if (!mounted) return;
+        setUtilityBills(Array.isArray(rows) ? rows : []);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : "Failed to load utility bills.";
+        setUtilityBillsError(message);
+        setUtilityBills([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setIsLoadingUtilityBills(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [isRenter, user?.id]);
+
+  const utilityBillStatusClass = (status: UtilityBillStatus): string => {
+    if (status === "Paid") return "bg-green-100 text-green-700 border-green-200";
+    if (status === "Overdue") return "bg-red-100 text-red-700 border-red-200";
+    return "bg-amber-100 text-amber-700 border-amber-200";
+  };
+
+  const markUtilityBillPaid = async (bill: UtilityBill) => {
+    setUtilityBillActionId(bill.id);
+    try {
+      const updated = await updateUtilityBill(bill.id, { status: "Paid" });
+      setUtilityBills((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      toast({
+        title: "Bill updated",
+        description: "Utility bill marked as paid.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update utility bill.";
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setUtilityBillActionId(null);
+    }
+  };
+
+  const billsForView = useMemo(
+    () =>
+      utilityBills.map((bill) => {
+        if (bill.status !== "Pending") return bill;
+        const dueAt = bill.dueDate ? new Date(bill.dueDate).getTime() : Number.NaN;
+        if (Number.isFinite(dueAt) && dueAt < Date.now()) {
+          return { ...bill, status: "Overdue" as UtilityBillStatus };
+        }
+        return bill;
+      }),
+    [utilityBills],
+  );
+
+  const formatBillAmount = (amount: number): string =>
+    new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: "NGN",
+      maximumFractionDigits: 0,
+    }).format(Math.max(0, amount));
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1988,6 +2098,11 @@ function BuyerDashboardView({ user, savedProperties }: any) {
           <TabsTrigger value="tours" className="gap-2">
             <Clock className="w-4 h-4" /> My Tours
           </TabsTrigger>
+          {isRenter && (
+            <TabsTrigger value="bills" className="gap-2">
+              <FileText className="w-4 h-4" /> Utility Bills
+            </TabsTrigger>
+          )}
           <TabsTrigger value="inquiries" className="gap-2">
             <MessageSquare className="w-4 h-4" /> My Inquiries
           </TabsTrigger>
@@ -2027,6 +2142,80 @@ function BuyerDashboardView({ user, savedProperties }: any) {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {isRenter && (
+          <TabsContent value="bills">
+            <Card>
+              <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle className="text-lg">Utility Bills</CardTitle>
+                  <CardDescription>Track pending, overdue, and paid utility bills.</CardDescription>
+                </div>
+                <Button variant="outline" onClick={() => void refreshUtilityBills()}>
+                  Refresh
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {utilityBillsError && <p className="mb-3 text-sm text-amber-600">{utilityBillsError}</p>}
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Due Date</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoadingUtilityBills && billsForView.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                          Loading utility bills...
+                        </TableCell>
+                      </TableRow>
+                    ) : billsForView.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                          No utility bills assigned yet.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      billsForView.map((bill) => (
+                        <TableRow key={bill.id}>
+                          <TableCell>{bill.billType}</TableCell>
+                          <TableCell>{formatBillAmount(bill.amount)}</TableCell>
+                          <TableCell>
+                            {bill.dueDate
+                              ? new Date(bill.dueDate).toLocaleDateString("en-US")
+                              : "Not set"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={utilityBillStatusClass(bill.status)}>{bill.status}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {bill.status === "Paid" ? (
+                              <span className="text-xs text-slate-500">No action</span>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={utilityBillActionId === bill.id}
+                                onClick={() => void markUtilityBillPaid(bill)}
+                              >
+                                Mark Paid
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
 
         <TabsContent value="inquiries">
           <Card>
