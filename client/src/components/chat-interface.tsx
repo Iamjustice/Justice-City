@@ -21,10 +21,12 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import {
+  fetchConversationFiles,
   fetchConversationMessages,
   sendConversationMessage,
   uploadConversationAttachments,
   upsertConversation,
+  type ConversationFileRecord,
   type ChatMessage,
 } from "@/lib/chat";
 import {
@@ -219,6 +221,9 @@ export function ChatInterface({
   const [isSending, setIsSending] = useState(false);
   const [isLocalFallback, setIsLocalFallback] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [conversationFiles, setConversationFiles] = useState<ConversationFileRecord[]>([]);
+  const [isLoadingConversationFiles, setIsLoadingConversationFiles] = useState(false);
+  const [conversationFilesError, setConversationFilesError] = useState<string | null>(null);
   const [transaction, setTransaction] = useState<TransactionSummary | null>(null);
   const [isResolvingActionId, setIsResolvingActionId] = useState<string | null>(null);
   const [isQueueingPdf, setIsQueueingPdf] = useState(false);
@@ -248,6 +253,7 @@ export function ChatInterface({
       setIsInitializing(true);
       setLoadError(null);
       setIsLocalFallback(false);
+      setConversationFilesError(null);
 
       try {
         if (initialConversationId) {
@@ -303,6 +309,8 @@ export function ChatInterface({
         setResolvedSenderId(resolvedRequester.id);
         setResolvedSenderName(resolvedRequester.name);
         setMessages(buildFallbackMessages(initialRecipientMessage));
+        setConversationFiles([]);
+        setConversationFilesError(null);
       } finally {
         if (!cancelled) {
           setIsInitializing(false);
@@ -334,6 +342,47 @@ export function ChatInterface({
     const history = await fetchConversationMessages(targetConversationId, viewerId);
     setMessages(Array.isArray(history) ? history : []);
   };
+
+  const refreshConversationFiles = async (targetConversationId: string): Promise<void> => {
+    const files = await fetchConversationFiles(targetConversationId);
+    setConversationFiles(Array.isArray(files) ? files : []);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    const loadConversationFiles = async () => {
+      if (!conversationId || isLocalFallback) {
+        setConversationFiles([]);
+        setConversationFilesError(null);
+        setIsLoadingConversationFiles(false);
+        return;
+      }
+
+      setIsLoadingConversationFiles(true);
+      try {
+        const files = await fetchConversationFiles(conversationId);
+        if (!active) return;
+        setConversationFiles(Array.isArray(files) ? files : []);
+        setConversationFilesError(null);
+      } catch (error) {
+        if (!active) return;
+        const message =
+          error instanceof Error ? error.message : "Failed to load conversation files.";
+        setConversationFiles([]);
+        setConversationFilesError(message);
+      } finally {
+        if (active) {
+          setIsLoadingConversationFiles(false);
+        }
+      }
+    };
+
+    void loadConversationFiles();
+    return () => {
+      active = false;
+    };
+  }, [conversationId, isLocalFallback]);
 
   useEffect(() => {
     let active = true;
@@ -445,6 +494,14 @@ export function ChatInterface({
       });
 
       setMessages((current) => [...current, saved]);
+      try {
+        await refreshConversationFiles(conversationId);
+        setConversationFilesError(null);
+      } catch (filesError) {
+        const message =
+          filesError instanceof Error ? filesError.message : "Failed to refresh conversation files.";
+        setConversationFilesError(message);
+      }
       setPendingFiles([]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to send message.";
@@ -532,6 +589,14 @@ export function ChatInterface({
         actorRole: user.role ?? undefined,
       });
       setLatestPdfJob(job);
+      try {
+        await refreshConversationFiles(conversationId);
+        setConversationFilesError(null);
+      } catch (filesError) {
+        const message =
+          filesError instanceof Error ? filesError.message : "Failed to refresh conversation files.";
+        setConversationFilesError(message);
+      }
       toast({
         title: "PDF job queued",
         description: "The service transcript PDF is queued for background generation.",
@@ -714,6 +779,71 @@ export function ChatInterface({
           </div>
         ) : (
           <div className="space-y-4">
+            {(isLoadingConversationFiles || conversationFiles.length > 0 || conversationFilesError) && (
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Conversation Files
+                  </p>
+                  {isLoadingConversationFiles && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Syncing...
+                    </span>
+                  )}
+                </div>
+                {conversationFilesError && (
+                  <p className="mt-2 text-xs text-amber-700">{conversationFilesError}</p>
+                )}
+                {!isLoadingConversationFiles && conversationFiles.length === 0 && !conversationFilesError && (
+                  <p className="mt-2 text-xs text-slate-500">No files shared yet.</p>
+                )}
+                {conversationFiles.length > 0 && (
+                  <div className="mt-2 grid gap-2">
+                    {conversationFiles.slice(0, 8).map((file) => {
+                      const fileLabel = file.kind === "transcript" ? "Transcript" : "Attachment";
+                      const fileHref = String(file.previewUrl ?? "").trim();
+                      const createdAt = file.createdAt ? new Date(file.createdAt) : null;
+                      const createdLabel =
+                        createdAt && !Number.isNaN(createdAt.getTime())
+                          ? createdAt.toLocaleString()
+                          : "Unknown time";
+
+                      return (
+                        <a
+                          key={file.id}
+                          href={fileHref || "#"}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(event) => {
+                            if (!fileHref) event.preventDefault();
+                          }}
+                          className={cn(
+                            "flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs",
+                            fileHref
+                              ? "border-slate-200 bg-slate-50 hover:bg-slate-100"
+                              : "border-slate-100 bg-slate-50 text-slate-400",
+                          )}
+                        >
+                          {file.kind === "transcript" ? (
+                            <Link2 className="h-3.5 w-3.5 shrink-0" />
+                          ) : (
+                            <FileText className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-medium">{file.fileName}</p>
+                            <p className="truncate text-[10px] text-slate-500">
+                              {fileLabel}  |  {createdLabel}
+                            </p>
+                          </div>
+                          {fileHref && <ExternalLink className="h-3.5 w-3.5 shrink-0" />}
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
             {messages.map((msg) => (
               <div
                 key={msg.id}

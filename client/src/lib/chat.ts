@@ -99,6 +99,19 @@ export type UploadedConversationAttachment = {
   fileSizeBytes?: number;
 };
 
+export type ConversationFileRecord = {
+  id: string;
+  kind: "attachment" | "transcript";
+  bucketId: string;
+  storagePath: string;
+  fileName: string;
+  mimeType?: string;
+  fileSizeBytes?: number;
+  createdAt: string;
+  uploadedBy?: string;
+  previewUrl?: string;
+};
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -203,6 +216,17 @@ export async function sendConversationMessage(
   return response.json();
 }
 
+export async function fetchConversationFiles(
+  conversationId: string,
+): Promise<ConversationFileRecord[]> {
+  const response = await apiRequest(
+    "GET",
+    `/api/chat/conversations/${encodeURIComponent(conversationId)}/files`,
+  );
+  const data = (await response.json()) as unknown;
+  return Array.isArray(data) ? (data as ConversationFileRecord[]) : [];
+}
+
 export async function uploadConversationAttachments(
   payload: UploadConversationAttachmentsPayload,
 ): Promise<UploadedConversationAttachment[]> {
@@ -225,24 +249,15 @@ export async function uploadConversationAttachments(
     })),
   );
 
-  const response = await fetch(
+  const response = await apiRequest(
+    "POST",
     `/api/chat/conversations/${encodeURIComponent(payload.conversationId)}/attachments`,
     {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        senderId: payload.senderId,
-        scope: payload.scope,
-        files,
-      }),
-      credentials: "include",
+      senderId: payload.senderId,
+      scope: payload.scope,
+      files,
     },
   );
-
-  if (!response.ok) {
-    const text = (await response.text()) || response.statusText;
-    throw new Error(`${response.status}: ${text}`);
-  }
 
   const data = (await response.json()) as {
     attachments?: UploadedConversationAttachment[];
