@@ -63,6 +63,12 @@ import {
   type PropertyExpenseCategory,
 } from "@/lib/property-expenses";
 import {
+  createUserDocument,
+  fetchUserDocuments,
+  type UserDocumentRecord,
+  type UserDocumentType,
+} from "@/lib/user-documents";
+import {
   deleteAgentListing as deleteAgentListingApi,
   fetchAgentListings,
   updateAgentListing as updateAgentListingApi,
@@ -221,6 +227,8 @@ export default function ModernAgentDashboardView({
     : "Manage your listings and track performance.";
   const policyLabel = isAdmin ? "Platform Policy" : "Standard Policy";
   const viewerId = String(user?.id ?? "").trim();
+  const canViewDocuments = Boolean(viewerId);
+  const canManageDocuments = role === "admin" || role === "agent" || role === "seller" || role === "owner";
   const canModifyListing = (listing: any): boolean => {
     const listingOwnerId = String(listing?.agentId ?? "").trim();
     if (isAdmin) return true;
@@ -310,6 +318,25 @@ export default function ModernAgentDashboardView({
     amount: "",
     expenseDate: "",
     notes: "",
+  });
+  const [userDocuments, setUserDocuments] = useState<UserDocumentRecord[]>([]);
+  const [isLoadingUserDocuments, setIsLoadingUserDocuments] = useState(false);
+  const [userDocumentsError, setUserDocumentsError] = useState<string | null>(null);
+  const [isCreatingUserDocument, setIsCreatingUserDocument] = useState(false);
+  const [userDocumentForm, setUserDocumentForm] = useState<{
+    documentType: UserDocumentType;
+    bucketId: string;
+    storagePath: string;
+    displayName: string;
+    listingId: string;
+    conversationId: string;
+  }>({
+    documentType: "Attachment",
+    bucketId: "service-records",
+    storagePath: "",
+    displayName: "",
+    listingId: "",
+    conversationId: "",
   });
 
   useEffect(() => {
@@ -478,6 +505,38 @@ export default function ModernAgentDashboardView({
       mounted = false;
     };
   }, [canViewExpenses, viewerId]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!canViewDocuments || !viewerId) {
+      setUserDocuments([]);
+      setUserDocumentsError(null);
+      setIsLoadingUserDocuments(false);
+      return undefined;
+    }
+
+    setIsLoadingUserDocuments(true);
+    setUserDocumentsError(null);
+    void fetchUserDocuments({ userId: viewerId })
+      .then((rows) => {
+        if (!mounted) return;
+        setUserDocuments(Array.isArray(rows) ? rows : []);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : "Failed to load documents.";
+        setUserDocumentsError(message);
+        setUserDocuments([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setIsLoadingUserDocuments(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [canViewDocuments, viewerId]);
 
   useEffect(() => {
     if (selectedListing) {
@@ -759,6 +818,80 @@ export default function ModernAgentDashboardView({
     }, {});
     return { total, byCategory };
   }, [propertyExpensesInRange]);
+
+  const refreshUserDocuments = async () => {
+    if (!canViewDocuments || !viewerId) return;
+    setIsLoadingUserDocuments(true);
+    setUserDocumentsError(null);
+    try {
+      const rows = await fetchUserDocuments({ userId: viewerId });
+      setUserDocuments(Array.isArray(rows) ? rows : []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load documents.";
+      setUserDocumentsError(message);
+    } finally {
+      setIsLoadingUserDocuments(false);
+    }
+  };
+
+  const createNewUserDocument = async () => {
+    const storagePath = userDocumentForm.storagePath.trim();
+    if (!storagePath) {
+      toast({
+        title: "Storage path required",
+        description: "Add a document URL or storage path before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCreatingUserDocument(true);
+    try {
+      const created = await createUserDocument({
+        documentType: userDocumentForm.documentType,
+        bucketId: userDocumentForm.bucketId.trim() || "service-records",
+        storagePath,
+        displayName: userDocumentForm.displayName.trim() || undefined,
+        listingId: userDocumentForm.listingId.trim() || undefined,
+        conversationId: userDocumentForm.conversationId.trim() || undefined,
+      });
+      setUserDocuments((current) => [created, ...current]);
+      setUserDocumentForm({
+        documentType: "Attachment",
+        bucketId: "service-records",
+        storagePath: "",
+        displayName: "",
+        listingId: "",
+        conversationId: "",
+      });
+      toast({
+        title: "Document added",
+        description: "Document record is now in your timeline.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create document record.";
+      toast({
+        title: "Create failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreatingUserDocument(false);
+    }
+  };
+
+  const openUserDocument = (document: UserDocumentRecord) => {
+    const path = String(document.storagePath ?? "").trim();
+    if (!path) return;
+    if (/^https?:\/\//i.test(path)) {
+      window.open(path, "_blank", "noopener,noreferrer");
+      return;
+    }
+    toast({
+      title: "Storage path",
+      description: path,
+    });
+  };
 
   const closedDeals = useMemo(
     () => listings.filter((listing: any) => isClosedDealStatus(String(listing.status ?? ""))),
@@ -1769,6 +1902,11 @@ export default function ModernAgentDashboardView({
               <FileText className="w-4 h-4" /> Expenses
             </TabsTrigger>
           )}
+          {canViewDocuments && (
+            <TabsTrigger value="documents" className="gap-2">
+              <FileText className="w-4 h-4" /> Documents
+            </TabsTrigger>
+          )}
           <TabsTrigger value="verifications" className="gap-2">
             <Clock className="w-4 h-4" /> Pending Verifications
           </TabsTrigger>
@@ -2418,6 +2556,156 @@ export default function ModernAgentDashboardView({
                           ) : (
                             <span className="text-xs text-slate-500">Read-only</span>
                           )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="documents">
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Document Timeline</CardTitle>
+                <CardDescription>
+                  View and manage user-linked document records by listing and conversation.
+                </CardDescription>
+              </div>
+              <Button variant="outline" onClick={() => void refreshUserDocuments()}>
+                Refresh
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {canManageDocuments && (
+                <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-3">
+                  <select
+                    title="Document type"
+                    aria-label="Document type"
+                    className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm"
+                    value={userDocumentForm.documentType}
+                    onChange={(event) =>
+                      setUserDocumentForm((current) => ({
+                        ...current,
+                        documentType: event.target.value as UserDocumentType,
+                      }))
+                    }
+                  >
+                    <option value="Attachment">Attachment</option>
+                    <option value="Contract">Contract</option>
+                    <option value="Title">Title</option>
+                    <option value="Invoice">Invoice</option>
+                    <option value="Receipt">Receipt</option>
+                    <option value="Other">Other</option>
+                  </select>
+                  <Input
+                    placeholder="Bucket ID"
+                    value={userDocumentForm.bucketId}
+                    onChange={(event) =>
+                      setUserDocumentForm((current) => ({ ...current, bucketId: event.target.value }))
+                    }
+                  />
+                  <Input
+                    placeholder="Display name"
+                    value={userDocumentForm.displayName}
+                    onChange={(event) =>
+                      setUserDocumentForm((current) => ({
+                        ...current,
+                        displayName: event.target.value,
+                      }))
+                    }
+                  />
+                  <Input
+                    placeholder="Listing ID (optional)"
+                    value={userDocumentForm.listingId}
+                    onChange={(event) =>
+                      setUserDocumentForm((current) => ({ ...current, listingId: event.target.value }))
+                    }
+                  />
+                  <Input
+                    placeholder="Conversation ID (optional)"
+                    value={userDocumentForm.conversationId}
+                    onChange={(event) =>
+                      setUserDocumentForm((current) => ({
+                        ...current,
+                        conversationId: event.target.value,
+                      }))
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      className="flex-1"
+                      placeholder="Storage URL or path"
+                      value={userDocumentForm.storagePath}
+                      onChange={(event) =>
+                        setUserDocumentForm((current) => ({
+                          ...current,
+                          storagePath: event.target.value,
+                        }))
+                      }
+                    />
+                    <Button disabled={isCreatingUserDocument} onClick={() => void createNewUserDocument()}>
+                      {isCreatingUserDocument ? "Saving..." : "Add"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {userDocumentsError && <p className="text-sm text-amber-600">{userDocumentsError}</p>}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Document</TableHead>
+                    <TableHead>Linkage</TableHead>
+                    <TableHead>Created</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoadingUserDocuments && userDocuments.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        Loading documents...
+                      </TableCell>
+                    </TableRow>
+                  ) : userDocuments.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        No document records yet.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    userDocuments.map((document) => (
+                      <TableRow key={document.id}>
+                        <TableCell>
+                          <div>
+                            <p className="font-semibold text-slate-900">
+                              {document.displayName || document.documentType}
+                            </p>
+                            <p className="text-xs text-slate-500">{document.bucketId}</p>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-xs text-slate-600">
+                          <div>Listing: {document.listingId || "-"}</div>
+                          <div>Conversation: {document.conversationId || "-"}</div>
+                        </TableCell>
+                        <TableCell>
+                          {document.createdAt
+                            ? new Date(document.createdAt).toLocaleString("en-US")
+                            : "Unknown"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openUserDocument(document)}
+                          >
+                            Open
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))

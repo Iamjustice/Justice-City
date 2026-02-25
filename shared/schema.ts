@@ -279,6 +279,22 @@ export const propertyExpenses = pgTable("property_expenses", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const userDocumentRecords = pgTable("user_document_records", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  listingId: uuid("listing_id"),
+  conversationId: uuid("conversation_id"),
+  ownerUserId: uuid("owner_user_id"),
+  renterUserId: uuid("renter_user_id"),
+  buyerUserId: uuid("buyer_user_id"),
+  sellerUserId: uuid("seller_user_id"),
+  agentUserId: uuid("agent_user_id"),
+  documentType: text("document_type").notNull(),
+  bucketId: text("bucket_id").notNull(),
+  storagePath: text("storage_path").notNull(),
+  displayName: text("display_name"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
