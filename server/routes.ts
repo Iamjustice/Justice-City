@@ -30,6 +30,7 @@ import {
 import {
   createAgentListing,
   deleteAgentListing,
+  getAgentListing,
   listAgentListings,
   updateListingVerificationStepStatus,
   updateAgentListing,
@@ -1800,6 +1801,48 @@ export async function registerRoutes(
       return res.status(200).json(rows);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load listings";
+      if (message.startsWith("FORBIDDEN:")) {
+        return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
+      }
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/agent/listings/:listingId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await resolveAuthenticatedActor(client, req);
+      if (!authActor) {
+        return res.status(401).json({ message: "Missing or invalid bearer token." });
+      }
+
+      const requestedActorId = String(req.query?.actorId ?? "").trim();
+      if (requestedActorId && requestedActorId !== authActor.userId) {
+        return res.status(403).json({ message: "actorId does not match authenticated user." });
+      }
+
+      const listingId = String(req.params.listingId ?? "").trim();
+      if (!listingId) {
+        return res.status(400).json({ message: "listingId is required." });
+      }
+
+      const row = await getAgentListing(listingId, {
+        actorId: authActor.userId,
+        actorRole: authActor.role,
+        actorName: authActor.name,
+      });
+
+      if (!row) {
+        return res.status(404).json({ message: "Listing was not found." });
+      }
+
+      return res.status(200).json(row);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load listing";
       if (message.startsWith("FORBIDDEN:")) {
         return res.status(403).json({ message: message.replace("FORBIDDEN:", "").trim() });
       }

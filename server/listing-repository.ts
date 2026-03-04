@@ -953,6 +953,56 @@ export async function listAgentListings(
   }
 }
 
+export async function getAgentListing(
+  listingId: string,
+  actor: ListingActionActor,
+): Promise<AgentListingRecord | null> {
+  const actorId = normalizeUserId(actor.actorId, actor.actorName || actor.actorId);
+  const client = getClient();
+
+  if (!client) {
+    const fallback = getFallbackListingById(listingId);
+    if (!fallback) return null;
+    await ensureActorAuthorized(actor, fallback.agentId || actorId);
+    return fallback;
+  }
+
+  try {
+    if (actor.actorName || actor.actorRole) {
+      await ensureUserExists(client, actorId, actor.actorName || "Agent User", actor.actorRole);
+    }
+
+    const mapped = await fetchSingleListingRecord(client, listingId);
+    if (mapped) {
+      await ensureActorAuthorized(actor, mapped.agentId || actorId, client);
+      return mapped;
+    }
+
+    const fallback = getFallbackListingById(listingId);
+    if (!fallback) return null;
+    await ensureActorAuthorized(actor, fallback.agentId || actorId);
+    return fallback;
+  } catch (error) {
+    const message = toErrorMessage(error);
+    if (message.startsWith(FORBIDDEN_PREFIX)) {
+      throw error;
+    }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      (isTableMissingError(error as { message?: string }) ||
+        isColumnMissingError(error as { message?: string }))
+    ) {
+      const fallback = getFallbackListingById(listingId);
+      if (!fallback) return null;
+      await ensureActorAuthorized(actor, fallback.agentId || actorId);
+      return fallback;
+    }
+    throw new Error(`Failed to load listing: ${message}`);
+  }
+}
+
 export async function updateAgentListingStatus(
   listingId: string,
   nextStatus: AgentListingStatus,
