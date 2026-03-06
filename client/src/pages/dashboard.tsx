@@ -1,4 +1,5 @@
 import { useAuth } from "@/lib/auth";
+import { useQuery } from "@tanstack/react-query";
 import { 
   Plus, 
   FileText, 
@@ -53,6 +54,7 @@ import { PropertyCard } from "@/components/property-card";
 import ModernAdminDashboardView from "@/components/admin-dashboard-view";
 import ModernAgentDashboardView from "@/components/agent-dashboard-view";
 import { createAgentListing, uploadAgentListingAssets } from "@/lib/agent-listings";
+import { listFavorites } from "@/lib/favorites";
 import {
   fetchUtilityBills,
   updateUtilityBill,
@@ -68,7 +70,6 @@ export default function Dashboard() {
   const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [isCreateListingOpen, setIsCreateListingOpen] = useState(false);
   const [isSubmittingListing, setIsSubmittingListing] = useState(false);
-  const [savedProperties, setSavedProperties] = useState<any[]>([]);
   const [createListingForm, setCreateListingForm] = useState({
     title: "",
     type: "Sale",
@@ -119,6 +120,17 @@ export default function Dashboard() {
     }
   }, [gateToastShown, isLoading, setLocation, toast, user]);
 
+  const { data: favorites = [], isLoading: isLoadingFavorites } = useQuery({
+    queryKey: ["/api/favorites"],
+    queryFn: listFavorites,
+    enabled: Boolean(user?.id && user.emailVerified && user.phoneVerified),
+  });
+
+  const savedProperties = useMemo(() => {
+    const favoriteIds = new Set(favorites.map((item) => item.listingId));
+    return MOCK_PROPERTIES.filter((property) => favoriteIds.has(property.id));
+  }, [favorites]);
+
   if (isLoading || !user || !user.emailVerified || !user.phoneVerified) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center text-sm text-slate-500">
@@ -126,18 +138,6 @@ export default function Dashboard() {
       </div>
     );
   }
-
-  useEffect(() => {
-    const loadSaved = () => {
-      const savedIds = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-      const saved = MOCK_PROPERTIES.filter(p => savedIds.includes(p.id));
-      setSavedProperties(saved);
-    };
-
-    loadSaved();
-    window.addEventListener("storage", loadSaved);
-    return () => window.removeEventListener("storage", loadSaved);
-  }, []);
 
   const buildVerificationSteps = (
     status: "Published" | "Pending Review" | "Draft" | "Archived",
@@ -508,10 +508,10 @@ export default function Dashboard() {
                  user={user}
                />;
       case "renter":
-        return <BuyerDashboardView user={user} savedProperties={savedProperties} />;
+        return <BuyerDashboardView user={user} savedProperties={savedProperties} isLoadingFavorites={isLoadingFavorites} />;
       case "buyer":
       default:
-        return <BuyerDashboardView user={user} savedProperties={savedProperties} />;
+        return <BuyerDashboardView user={user} savedProperties={savedProperties} isLoadingFavorites={isLoadingFavorites} />;
     }
   };
 
@@ -1971,7 +1971,7 @@ function SellerDashboardView({ listings, handleCreateListing, user }: any) {
   );
 }
 
-function BuyerDashboardView({ user, savedProperties }: any) {
+function BuyerDashboardView({ user, savedProperties, isLoadingFavorites }: any) {
   const { toast } = useToast();
   const isRenter = String(user?.role ?? "").trim().toLowerCase() === "renter";
   const [utilityBills, setUtilityBills] = useState<UtilityBill[]>([]);
@@ -2109,7 +2109,14 @@ function BuyerDashboardView({ user, savedProperties }: any) {
         </TabsList>
 
         <TabsContent value="saved">
-          {savedProperties && savedProperties.length > 0 ? (
+          {isLoadingFavorites ? (
+            <Card>
+              <CardContent className="h-[300px] flex flex-col items-center justify-center text-center">
+                <Heart className="w-12 h-12 text-slate-200 mb-4" />
+                <h3 className="text-lg font-bold text-slate-900">Loading saved properties...</h3>
+              </CardContent>
+            </Card>
+          ) : savedProperties && savedProperties.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {savedProperties.map((property: any) => (
                 <PropertyCard key={property.id} property={property} />

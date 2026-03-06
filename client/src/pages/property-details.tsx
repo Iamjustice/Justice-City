@@ -4,7 +4,10 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { VerificationModal } from "@/components/verification-modal";
 import { ChatInterface } from "@/components/chat-interface";
-import { useState, useEffect, useRef } from "react";
+import { useMemo, useState, useRef } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { listFavorites, removeFavorite, saveFavorite } from "@/lib/favorites";
+import { queryClient } from "@/lib/queryClient";
 import { 
   MapPin, 
   Bed, 
@@ -34,7 +37,6 @@ export default function PropertyDetails() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isAgentProfileOpen, setIsAgentProfileOpen] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [isSaved, setIsSaved] = useState(false);
   const touchStart = useRef<number | null>(null);
   const touchEnd = useRef<number | null>(null);
 
@@ -63,14 +65,31 @@ export default function PropertyDetails() {
   };
 
   const property = MOCK_PROPERTIES.find(p => p.id === params?.id);
-
-  useEffect(() => {
-    // Mock check if property is saved in dashboard
-    const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-    setIsSaved(savedProperties.includes(property?.id));
-  }, [property?.id]);
+  const { data: favorites = [] } = useQuery({
+    queryKey: ["/api/favorites"],
+    queryFn: listFavorites,
+    enabled: Boolean(user),
+  });
+  const favoriteIds = useMemo(
+    () => new Set(favorites.map((item) => item.listingId)),
+    [favorites],
+  );
 
   if (!property) return <NotFound />;
+  const isSaved = favoriteIds.has(property.id);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (isSaved) {
+        await removeFavorite(property.id);
+        return;
+      }
+      await saveFavorite(property.id);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/favorites"] });
+    },
+  });
 
   // Mock extra images
   const images = [
@@ -96,15 +115,8 @@ export default function PropertyDetails() {
     }
 
     if (action === "save") {
-      const savedProperties = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-      let newSaved;
-      if (isSaved) {
-        newSaved = savedProperties.filter((id: string) => id !== property.id);
-      } else {
-        newSaved = [...savedProperties, property.id];
-      }
-      localStorage.setItem("saved_properties", JSON.stringify(newSaved));
-      setIsSaved(!isSaved);
+      if (saveMutation.isPending) return;
+      saveMutation.mutate();
       return;
     }
 
@@ -137,6 +149,7 @@ export default function PropertyDetails() {
           className={`w-14 h-14 rounded-full shadow-2xl transition-all ${
             isSaved ? "bg-red-500 text-white" : "bg-white text-slate-400 hover:text-red-500"
           } border border-slate-200`}
+          disabled={saveMutation.isPending}
         >
           <Heart className={`w-6 h-6 ${isSaved ? "fill-current" : ""}`} />
         </Button>
@@ -224,6 +237,7 @@ export default function PropertyDetails() {
                 ? "bg-red-500 hover:bg-red-600 text-white" 
                 : "bg-white hover:bg-slate-50 text-slate-900"
             }`}
+            disabled={saveMutation.isPending}
           >
             <Heart className={`w-5 h-5 ${isSaved ? "fill-current" : ""}`} />
             {isSaved ? "Saved" : "Save"}

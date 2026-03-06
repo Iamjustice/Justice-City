@@ -40,6 +40,11 @@ import {
   type AgentListingStatus,
   type AgentPayoutStatus,
 } from "./listing-repository";
+import {
+  listUserFavorites,
+  removeUserFavorite,
+  upsertUserFavorite,
+} from "./favorites-repository";
 import { listServiceOfferings, updateServiceOffering } from "./service-offerings-repository";
 import {
   createHiringApplication,
@@ -158,6 +163,14 @@ function normalizeServiceCodeForPath(rawValue: string | undefined): string {
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "") || "general_service"
   );
+}
+
+function normalizeFavoriteListingId(rawValue: unknown): string {
+  const listingId = String(rawValue ?? "").trim();
+  if (!listingId) return "";
+  if (listingId.length > 200) return "";
+  if (/[\u0000-\u001F]/.test(listingId)) return "";
+  return listingId;
 }
 
 function toServiceFolderSegment(serviceCodeRaw: string | undefined): string {
@@ -1664,6 +1677,85 @@ export async function registerRoutes(
       return res.status(200).json(profile);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to update profile";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.get("/api/favorites", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+
+      const favorites = await listUserFavorites(authActor.userId);
+      return res.status(200).json({
+        items: favorites.map((item) => ({
+          id: item.id,
+          listingId: item.listingId,
+          createdAt: item.createdAt,
+        })),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load favorites.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.post("/api/favorites", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+
+      const listingId = normalizeFavoriteListingId(
+        (req.body as Record<string, unknown> | undefined)?.listingId,
+      );
+      if (!listingId) {
+        return res.status(400).json({ message: "listingId is required." });
+      }
+
+      const favorite = await upsertUserFavorite(authActor.userId, listingId);
+      return res.status(200).json({
+        ok: true,
+        favorite: {
+          id: favorite.id,
+          listingId: favorite.listingId,
+          createdAt: favorite.createdAt,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to save favorite.";
+      return res.status(502).json({ message });
+    }
+  });
+
+  app.delete("/api/favorites/:listingId", async (req: Request, res: Response) => {
+    try {
+      const client = createSupabaseServiceClient();
+      if (!client) {
+        return res.status(503).json({ message: "Supabase service client is not configured." });
+      }
+
+      const authActor = await requireAuthenticatedActor(client, req, res);
+      if (!authActor) return;
+
+      const listingId = normalizeFavoriteListingId(req.params.listingId);
+      if (!listingId) {
+        return res.status(400).json({ message: "listingId is required." });
+      }
+
+      await removeUserFavorite(authActor.userId, listingId);
+      return res.status(200).json({ ok: true, listingId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to remove favorite.";
       return res.status(502).json({ message });
     }
   });

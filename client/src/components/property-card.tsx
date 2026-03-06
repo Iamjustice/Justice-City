@@ -1,40 +1,57 @@
 import { Property } from "@/lib/mock-data";
 import { Link } from "wouter";
 import { MapPin, Bed, Bath, Expand, ShieldCheck, Heart } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { AgentPublicProfileDialog } from "@/components/agent-public-profile-dialog";
+import { useAuth } from "@/lib/auth";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { listFavorites, removeFavorite, saveFavorite } from "@/lib/favorites";
+import { queryClient } from "@/lib/queryClient";
 
 export function PropertyCard({ property }: { property: Property }) {
-  const [isSaved, setIsSaved] = useState(false);
   const [isAgentProfileOpen, setIsAgentProfileOpen] = useState(false);
+  const { user, login } = useAuth();
   const formatter = new Intl.NumberFormat('en-NG', {
     style: 'currency',
     currency: 'NGN',
     maximumFractionDigits: 0,
   });
 
-  useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-    setIsSaved(saved.includes(property.id));
-  }, [property.id]);
+  const { data: favorites = [] } = useQuery({
+    queryKey: ["/api/favorites"],
+    queryFn: listFavorites,
+    enabled: Boolean(user),
+  });
+
+  const favoriteIds = useMemo(
+    () => new Set(favorites.map((item) => item.listingId)),
+    [favorites],
+  );
+  const isSaved = favoriteIds.has(property.id);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (isSaved) {
+        await removeFavorite(property.id);
+        return;
+      }
+      await saveFavorite(property.id);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/favorites"] });
+    },
+  });
 
   const toggleSave = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    
-    const saved = JSON.parse(localStorage.getItem("saved_properties") || "[]");
-    let newSaved;
-    if (isSaved) {
-      newSaved = saved.filter((id: string) => id !== property.id);
-    } else {
-      newSaved = [...saved, property.id];
+    if (!user) {
+      login();
+      return;
     }
-    localStorage.setItem("saved_properties", JSON.stringify(newSaved));
-    setIsSaved(!isSaved);
-    
-    // Dispatch event for other components to update
-    window.dispatchEvent(new Event("storage"));
+    if (saveMutation.isPending) return;
+    saveMutation.mutate();
   };
 
   return (
@@ -70,11 +87,13 @@ export function PropertyCard({ property }: { property: Property }) {
                 data-testid={`button-save-${property.id}`}
                 className={cn(
                   "p-2 rounded-full transition-all duration-200 border backdrop-blur-md",
+                  saveMutation.isPending && "opacity-60 cursor-not-allowed",
                   isSaved 
                     ? "bg-red-500 border-red-400 text-white" 
                     : "bg-white/20 border-white/30 text-white hover:bg-white hover:text-red-500"
                 )}
                 onClick={toggleSave}
+                disabled={saveMutation.isPending}
               >
                 <Heart className={cn("w-4 h-4", isSaved && "fill-current")} />
               </button>

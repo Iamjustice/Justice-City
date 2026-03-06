@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
@@ -294,6 +295,22 @@ export const userDocumentRecords = pgTable("user_document_records", {
   displayName: text("display_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const userFavorites = pgTable(
+  "user_favorites",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    listingId: text("listing_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userListingUnique: uniqueIndex("user_favorites_user_listing_uidx").on(
+      table.userId,
+      table.listingId,
+    ),
+  }),
+);
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
